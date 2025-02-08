@@ -1,0 +1,455 @@
+use super::memtable::Memtable;
+use bytes::Bytes;
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicUsize, Arc},
+};
+
+pub struct LsmMemory {
+    pub(crate) active: Arc<Memtable>,
+    /// An approximation
+    pub(crate) active_size: AtomicUsize,
+
+    /// Newer ones have higher index.
+    pub(crate) frozen: VecDeque<Arc<Memtable>>,
+}
+
+impl LsmMemory {
+    pub fn put(&self, key: &[u8], value: &[u8]) {
+        self.active_size.fetch_add(
+            key.len() + value.len(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.active.put(key, value);
+    }
+
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        let opt_rec_active = self.active.get(key);
+        if let Some(rec) = opt_rec_active {
+            return rec.as_search_result();
+        }
+
+        // Not found in active memtable
+
+        for table in &self.frozen {
+            let opt_rec = table.get(key);
+            if let Some(rec) = opt_rec {
+                return rec.as_search_result();
+            }
+        }
+
+        // ...And not found in any frozen memtable
+        // Thus not found in the memory structure
+
+        None
+    }
+
+    pub fn delete(&self, key: &[u8]) {
+        self.active.delete(key);
+    }
+}
+
+// privates
+impl LsmMemory {
+    pub(crate) fn try_freeze_current(&mut self, freeze_size: usize) {
+        let current_size = self.active_size.load(std::sync::atomic::Ordering::Relaxed);
+        if current_size >= freeze_size {
+            // really freeze
+            self.frozen.push_front(self.active.clone()); // clone the arc
+            self.active = Arc::new(Memtable::new());
+            self.active_size
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn test_multiple_memtables() {
+        let mut memory = LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        };
+
+        // Insert data that should cause multiple freezes
+        for i in 0..1000 {
+            let key = format!("key{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            memory.put(&key, &value);
+
+            // Try to freeze after each insert with a relatively small freeze size
+            memory.try_freeze_current(1000);
+        }
+
+        // Verify we have multiple frozen memtables
+        assert!(memory.frozen.len() > 0, "Should have frozen memtables");
+        dbg!(memory.frozen.len());
+
+        // print each frozen memtable size
+        for table in &memory.frozen {
+            let size: usize = table
+                .map
+                .iter()
+                // if as search result is none, return 0
+                .map(|kv| {
+                    kv.key().len()
+                        + if let Some(rec) = kv.value().clone().as_search_result() {
+                            rec.len()
+                        } else {
+                            0
+                        }
+                })
+                .sum();
+            println!("Frozen memtable size: {}", size);
+        }
+
+        // Verify we can still read data from both active and frozen memtables
+        for i in 0..1000 {
+            let key = format!("key{}", i).into_bytes();
+            let value = memory.get(&key);
+            assert!(value.is_some(), "Failed to retrieve key{}", i);
+            assert_eq!(
+                value.unwrap(),
+                format!("value{}", i).into_bytes(),
+                "Incorrect value for key{}",
+                i
+            );
+        }
+
+        // Test deletion
+        let test_key = b"key0";
+        memory.delete(test_key);
+        assert!(memory.get(test_key).is_none(), "Key should be deleted");
+
+        dbg!(memory.frozen.len());
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        let memory = Arc::new(LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        });
+        let mut handles = vec![];
+
+        // Spawn multiple threads to perform operations
+        for i in 0..50 {
+            let mem = memory.clone();
+            let handle = thread::spawn(move || {
+                for j in 0..100 {
+                    let key = format!("key{}_{}", i, j).into_bytes();
+                    let value = format!("value{}_{}", i, j).into_bytes();
+                    mem.put(&key, &value);
+
+                    // Verify the write
+                    let result = mem.get(&key);
+                    assert_eq!(result.unwrap(), Bytes::copy_from_slice(&value));
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_freeze_under_load() {
+        let mut memory = LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        };
+
+        // Insert data with varying sizes to trigger multiple freezes
+        for i in 0..100 {
+            let key = format!("key{}", i).into_bytes();
+            // Create values of increasing size
+            let value = vec![b'x'; i * 100];
+            memory.put(&key, &value);
+            memory.try_freeze_current(1000); // Small freeze size to trigger frequent freezes
+        }
+
+        // Verify frozen memtable count
+        assert!(
+            memory.frozen.len() > 2,
+            "Should have multiple frozen memtables"
+        );
+
+        // print each frozen memtable size
+        for table in &memory.frozen {
+            let size: usize = table
+                .map
+                .iter()
+                // if as search result is none, return 0
+                .map(|kv| {
+                    kv.key().len()
+                        + if let Some(rec) = kv.value().clone().as_search_result() {
+                            rec.len()
+                        } else {
+                            0
+                        }
+                })
+                .sum();
+            println!("Frozen memtable size: {}", size);
+        }
+
+        // Verify data is still accessible
+        for i in 0..100 {
+            let key = format!("key{}", i).into_bytes();
+            let value = vec![b'x'; i * 100];
+            let result = memory.get(&key);
+            assert_eq!(result.unwrap(), Bytes::from(value));
+        }
+    }
+
+    #[test]
+    fn test_mixed_operations() {
+        let mut memory = LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        };
+
+        // Mix of puts, gets, and deletes
+        for i in 0..100 {
+            let key = format!("key{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+
+            // Put
+            memory.put(&key, &value);
+
+            // Get (should exist)
+            assert_eq!(memory.get(&key).unwrap(), Bytes::from(value.clone()));
+
+            // Delete every third key
+            if i % 3 == 0 {
+                memory.delete(&key);
+                assert!(memory.get(&key).is_none());
+            }
+
+            memory.try_freeze_current(1000);
+        }
+
+        // Verify final state
+        for i in 0..100 {
+            let key = format!("key{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+
+            if i % 3 == 0 {
+                // Deleted keys should not exist
+                assert!(memory.get(&key).is_none());
+            } else {
+                // Other keys should exist with correct values
+                assert_eq!(memory.get(&key).unwrap(), Bytes::from(value));
+            }
+        }
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        let mut memory = LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        };
+
+        // Test empty key/value
+        memory.put(b"", b"empty_key");
+        memory.put(b"empty_value", b"");
+        memory.put(b"", b"");
+
+        assert_eq!(memory.get(b"").unwrap(), Bytes::from(""));
+        assert_eq!(memory.get(b"empty_value").unwrap(), Bytes::from(""));
+
+        // Test large values
+        let large_value = vec![b'x'; 1_000_000];
+        memory.put(b"large_key", &large_value);
+        assert_eq!(memory.get(b"large_key").unwrap(), Bytes::from(large_value));
+
+        // Test delete after freeze
+        memory.try_freeze_current(100);
+        memory.delete(b"large_key");
+        assert!(memory.get(b"large_key").is_none());
+    }
+
+    #[test]
+    fn test_high_pressure_concurrent_access() {
+        let memory = Arc::new(LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        });
+
+        const NUM_WRITERS: usize = 20;
+        const NUM_READERS: usize = 30;
+        const OPS_PER_THREAD: usize = 1000;
+        let mut handles = vec![];
+
+        // Spawn writer threads
+        for i in 0..NUM_WRITERS {
+            let mem = memory.clone();
+            let handle = thread::spawn(move || {
+                for j in 0..OPS_PER_THREAD {
+                    // Use modulo to create key contention between threads
+                    let key_id = (i * j) % 100;
+                    let key = format!("key{}", key_id).into_bytes();
+                    let value = format!("value{}-{}", key_id, j).into_bytes();
+                    mem.put(&key, &value);
+
+                    // Occasional read of own writes
+                    // if j % 10 == 0 {
+                    //     dbg!(mem.get(&key));
+                    //     let result = mem.get(&key);
+                    //     // if result.is_none() {
+                    //     //     dbg!(&result);
+                    //     //     dbg!(mem.get(&key));
+                    //     // }
+                    //     assert!(
+                    //         result.is_some(),
+                    //         "Failed to read own write of {}",
+                    //         String::from_utf8_lossy(&key)
+                    //     );
+                    // }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Spawn reader threads that continuously read
+        for _ in 0..NUM_READERS {
+            let mem = memory.clone();
+            let handle = thread::spawn(move || {
+                for _ in 0..OPS_PER_THREAD {
+                    // Read random keys from the possible key space
+                    let key_id = rand::random_range(0..100);
+                    let key = format!("key{}", key_id).into_bytes();
+                    // Reads might return None which is fine - just shouldn't panic
+                    let _result = mem.get(&key);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify we can still read all keys
+        for i in 0..100 {
+            let key = format!("key{}", i).into_bytes();
+            let result = memory.get(&key);
+            // Key should either be None or contain a valid value
+            if let Some(value) = result {
+                assert!(String::from_utf8_lossy(&value).starts_with(&format!("value{}-", i)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_serial_read_after_write() {
+        let mut memory = LsmMemory {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+        };
+
+        // Test without freezing
+        for i in 0..100 {
+            let key = format!("key{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+
+            // Write
+            memory.put(&key, &value);
+
+            // Immediate read
+            let result = memory.get(&key);
+            assert!(
+                result.is_some(),
+                "Failed to read key {} immediately after write",
+                i
+            );
+            assert_eq!(
+                result.unwrap(),
+                Bytes::from(value.clone()),
+                "Wrong value read for key {}",
+                i
+            );
+        }
+
+        // Test with freezing after each write
+        for i in 100..200 {
+            let key = format!("key{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+
+            // Write
+            memory.put(&key, &value);
+
+            // Try to freeze
+            memory.try_freeze_current(100); // Small size to encourage freezing
+
+            // Read after potential freeze
+            let result = memory.get(&key);
+            assert!(result.is_some(), "Failed to read key {} after freeze", i);
+            assert_eq!(
+                result.unwrap(),
+                Bytes::from(value.clone()),
+                "Wrong value read for key {} after freeze",
+                i
+            );
+        }
+
+        // Verify all writes are still readable
+        for i in 0..200 {
+            let key = format!("key{}", i).into_bytes();
+            let expected_value = format!("value{}", i).into_bytes();
+            let result = memory.get(&key);
+
+            assert!(
+                result.is_some(),
+                "Failed to read key {} in final verification",
+                i
+            );
+            assert_eq!(
+                result.unwrap(),
+                Bytes::from(expected_value),
+                "Wrong value read for key {} in final verification",
+                i
+            );
+        }
+
+        // Print memtable sizes for debugging
+        println!(
+            "Active memtable size: {}",
+            memory
+                .active_size
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+        println!("Number of frozen memtables: {}", memory.frozen.len());
+        for (i, table) in memory.frozen.iter().enumerate() {
+            let size: usize = table
+                .map
+                .iter()
+                .map(|kv| {
+                    kv.key().len()
+                        + if let Some(rec) = kv.value().clone().as_search_result() {
+                            rec.len()
+                        } else {
+                            0
+                        }
+                })
+                .sum();
+            println!("Frozen memtable {} size: {}", i, size);
+        }
+    }
+}
