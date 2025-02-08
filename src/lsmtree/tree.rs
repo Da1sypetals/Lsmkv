@@ -37,6 +37,10 @@ impl LsmTree {
     }
 }
 
+// ........................................................................
+// ................................. test .................................
+// ........................................................................
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +231,70 @@ mod tests {
                         mem.get(&key),
                         None,
                         "Key-{}-{} should not exist after deletion",
+                        thread_id,
+                        i
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    /// Tests concurrent writes with immediate reads from multiple threads
+    fn test_inmem_concurrent_write_read() {
+        let mut tree = create_test_tree();
+        let small_freeze_size = 1000;
+        tree.mem_config.freeze_size = small_freeze_size;
+        let tree = Arc::new(tree);
+
+        let num_threads = 10;
+        let num_operations = 1000;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|thread_id| {
+                let tree = Arc::clone(&tree);
+                std::thread::spawn(move || {
+                    // Each thread writes its own set of keys
+                    for i in 0..num_operations {
+                        let key = format!("t{}-key-{}", thread_id, i).into_bytes();
+                        let value = format!("t{}-value-{}", thread_id, i).into_bytes();
+
+                        // Write
+                        tree.put(&key, &value);
+
+                        // Immediate read verification
+                        let result = tree.get(&key);
+                        assert_eq!(
+                            result.unwrap(),
+                            Bytes::from(value.clone()),
+                            "Thread {} failed immediate read of key {}",
+                            thread_id,
+                            i
+                        );
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Final verification that all values are present
+        {
+            let mem = tree.mem.read().unwrap();
+            println!("Number of frozen memtables: {}", mem.frozen.len());
+
+            for thread_id in 0..num_threads {
+                for i in 0..num_operations {
+                    let key = format!("t{}-key-{}", thread_id, i).into_bytes();
+                    let expected = format!("t{}-value-{}", thread_id, i);
+                    let result = mem.get(&key);
+                    assert_eq!(
+                        result.unwrap(),
+                        Bytes::from(expected),
+                        "Thread {} key {} not found in final verification",
                         thread_id,
                         i
                     );
