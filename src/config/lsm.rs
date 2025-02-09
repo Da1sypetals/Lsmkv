@@ -1,18 +1,19 @@
+use super::{memory::MemoryConfig, sst::SstConfig};
+use crate::{
+    lsmtree::tree::LsmTree,
+    memory::{memory::LsmMemory, memtable::Memtable},
+};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     sync::{atomic::AtomicUsize, Arc, RwLock},
 };
 
-use crate::{
-    lsmtree::tree::LsmTree,
-    memory::{config::LsmMemoryConfig, memory::LsmMemory, memtable::Memtable},
-};
-use serde::{Deserialize, Serialize};
-
 #[derive(Serialize, Deserialize)]
 pub struct LsmConfig {
     path: String,
-    memory: LsmMemoryConfig,
+    memory: MemoryConfig,
+    sst: SstConfig,
 }
 
 impl LsmConfig {

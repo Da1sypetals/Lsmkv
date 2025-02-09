@@ -1,4 +1,5 @@
-use crate::memory::{config::LsmMemoryConfig, memory::LsmMemory};
+use crate::config::memory::MemoryConfig;
+use crate::memory::memory::LsmMemory;
 use bytes::Bytes;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 pub struct LsmTree {
     pub(crate) mem: Arc<RwLock<LsmMemory>>,
-    pub(crate) mem_config: LsmMemoryConfig,
+    pub(crate) mem_config: MemoryConfig,
 }
 
 impl LsmTree {
@@ -44,11 +45,11 @@ impl LsmTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{config::LsmMemoryConfig, memtable::Memtable};
+    use crate::memory::memtable::Memtable;
 
     // Helper function to create a test tree
     fn create_test_tree() -> LsmTree {
-        let config = LsmMemoryConfig {
+        let config = MemoryConfig {
             freeze_size: 1024 * 1024, // 1MB
         };
         LsmTree {
