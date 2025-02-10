@@ -1,3 +1,4 @@
+use crate::disk::sst::Index;
 use crate::{
     config::sst::SstConfig,
     disk::block::DataBlockWriter,
@@ -9,8 +10,6 @@ use std::{
     io::{BufWriter, Seek, Write},
     sync::Arc,
 };
-
-pub(crate) type Index = Vec<(Bytes, u16)>;
 
 pub struct SstWriter {
     config: SstConfig,
@@ -60,13 +59,16 @@ impl SstWriter {
         }
 
         let indexfile = File::create(&format!("{}/{}.index", self.dir, self.filename)).unwrap();
-        let mut iwriter = BufWriter::new(indexfile);
+        let mut index_writer = BufWriter::new(indexfile);
         for (key, datafile_offset) in index {
             let key_len = key.len() as u16;
-            iwriter.write_all(&key_len.to_le_bytes()).unwrap();
-            iwriter.write_all(&key).unwrap();
-            iwriter.write_all(&datafile_offset.to_le_bytes()).unwrap();
+            index_writer.write_all(&key_len.to_le_bytes()).unwrap();
+            index_writer.write_all(&key).unwrap();
+            index_writer
+                .write_all(&datafile_offset.to_le_bytes())
+                .unwrap();
         }
+        index_writer.flush().unwrap();
     }
 }
 

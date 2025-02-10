@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Record {
     Value(Bytes),
     Tomb,
