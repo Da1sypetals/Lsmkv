@@ -23,6 +23,8 @@ impl LsmTree {
             let mut mem = self.mem.write().unwrap();
             mem.try_freeze_current(self.mem_config.freeze_size);
         }
+
+        // todo: periodic flush to disk
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Bytes> {

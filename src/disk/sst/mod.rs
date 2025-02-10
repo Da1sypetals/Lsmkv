@@ -3,4 +3,4 @@ pub mod write;
 
 use bytes::Bytes;
 
-pub(crate) type Index = Vec<(Bytes, u16)>;
+pub(crate) type Index = Vec<(Bytes, u64)>;

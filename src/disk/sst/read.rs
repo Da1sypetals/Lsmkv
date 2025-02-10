@@ -8,8 +8,24 @@ use std::io::Seek;
 #[derive(Debug, PartialEq, Clone, Copy)]
 /// This is index in the Index array.
 pub enum BisectResult {
+    //
+    //                 Exact(idx)
+    //                 |
+    //                 v
+    // +--------------+--------------+--------------+
+    // | key, offset  | key, offset  | key, offset  |
+    // +--------------+--------------+--------------+
+    //
     /// Use: index[idx] to get the exact offset
     Exact(usize),
+    //
+    //                 left                          right
+    //                 |                             |
+    //                 v                             v
+    // +--------------+--------------+--------------+--------------+
+    // | key, offset  | key, offset  | key, offset  | key, offset  |
+    // +--------------+--------------+--------------+--------------+
+    //
     /// Use: index[left], index[right] to get the range of two offsets
     Range(usize, usize),
 }
@@ -27,7 +43,7 @@ impl SstReader {
     pub fn get(&self, key: &[u8]) -> Option<Record> {
         let index = self.get_index();
 
-        // dbg!(&index);
+        // dbg!(&index.len());
 
         match self.bisect_index(&index, key) {
             Some(BisectResult::Range(left, right)) => {
@@ -37,13 +53,14 @@ impl SstReader {
                 let mut file = File::open(format!("{}/{}.data", self.dir, self.filename)).unwrap();
 
                 // Seek to the left offset position
-                file.seek(std::io::SeekFrom::Start(left as u64)).unwrap();
+                file.seek(std::io::SeekFrom::Start(left_offset as u64))
+                    .unwrap();
 
                 // Read and decode records until we find the key or reach right offset
                 let mut pos = left_offset as u64;
                 let mut buf = Vec::new();
 
-                while pos <= right_offset as u64 {
+                while pos <= right_offset {
                     // Read record type
                     buf.resize(1, 0);
                     file.read_exact(&mut buf).unwrap();
@@ -63,29 +80,24 @@ impl SstReader {
                             let key_size =
                                 u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
 
+                            // Read value size
+                            buf.resize(2, 0);
+                            file.read_exact(&mut buf).unwrap();
+                            let value_size =
+                                u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+
                             // Read key
                             buf.resize(key_size, 0);
                             file.read_exact(&mut buf).unwrap();
 
                             // Check if this is our key
                             if &buf == key {
-                                // Read value size
-                                buf.resize(2, 0);
-                                file.read_exact(&mut buf).unwrap();
-                                let value_size =
-                                    u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
-
                                 // Read value
                                 buf.resize(value_size, 0);
                                 file.read_exact(&mut buf).unwrap();
 
                                 return Some(Record::Value(Bytes::copy_from_slice(&buf)));
                             } else {
-                                // Skip value
-                                buf.resize(2, 0);
-                                file.read_exact(&mut buf).unwrap();
-                                let value_size =
-                                    u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
                                 file.seek(std::io::SeekFrom::Current(value_size as i64))
                                     .unwrap();
                             }
@@ -108,7 +120,7 @@ impl SstReader {
                             }
                             // else do nothing (to skip this value), since cursor is at the end of this KV pair.
                         }
-                        _ => panic!("Invalid record type"),
+                        type_id => panic!("Invalid record type: type_id = {}", type_id),
                     }
 
                     pos = file.stream_position().unwrap();
@@ -138,6 +150,12 @@ impl SstReader {
                         let key_size =
                             u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
 
+                        // Read value size
+                        buf.resize(2, 0);
+                        file.read_exact(&mut buf).unwrap();
+                        let value_size =
+                            u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+
                         // Read key
                         buf.resize(key_size, 0);
                         file.read_exact(&mut buf).unwrap();
@@ -146,12 +164,6 @@ impl SstReader {
                         // also  run on release mode
                         assert_eq!(&buf, key, "Key mismatch in exact match case");
 
-                        // Read value size
-                        buf.resize(2, 0);
-                        file.read_exact(&mut buf).unwrap();
-                        let value_size =
-                            u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
-
                         // Read value
                         buf.resize(value_size, 0);
                         file.read_exact(&mut buf).unwrap();
@@ -159,7 +171,6 @@ impl SstReader {
                         Some(Record::Value(Bytes::copy_from_slice(&buf)))
                     }
                     1 => {
-                        println!("Tomb");
                         // Tomb record
                         buf.resize(2, 0);
                         file.read_exact(&mut buf).unwrap();
@@ -231,7 +242,7 @@ impl SstReader {
     }
 
     fn get_index(&self) -> Index {
-        let mut index = Vec::new();
+        let mut index = Index::new();
         let mut file = File::open(format!("{}/{}.index", self.dir, self.filename)).unwrap();
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).unwrap();
@@ -246,9 +257,9 @@ impl SstReader {
             let key = Bytes::copy_from_slice(&contents[pos..pos + key_len]);
             pos += key_len;
 
-            // Read offset (u16)
-            let offset = u16::from_le_bytes(contents[pos..pos + 2].try_into().unwrap());
-            pos += 2;
+            // Read offset (u64)
+            let offset = u64::from_le_bytes(contents[pos..pos + 8].try_into().unwrap());
+            pos += 8;
 
             index.push((key, offset));
         }
@@ -269,7 +280,7 @@ mod tests {
     use tempfile::tempdir;
     use tempfile::NamedTempFile;
 
-    fn create_test_index_file(dir: &str, filename: &str, entries: &[(Vec<u8>, u16)]) {
+    fn create_test_index_file(dir: &str, filename: &str, entries: &[(Vec<u8>, u64)]) {
         let mut temp_file = NamedTempFile::new_in(dir).unwrap();
         let file_path = temp_file.path().to_str().unwrap().to_string();
 
@@ -337,7 +348,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
-        let entries = vec![(b"key1".to_vec(), 42u16)];
+        let entries = vec![(b"key1".to_vec(), 42u64)];
         create_test_index_file(&dir_path, "test_single", &entries);
 
         let reader = SstReader {
@@ -357,9 +368,9 @@ mod tests {
         let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
         let entries = vec![
-            (b"key1".to_vec(), 42u16),
-            (b"key2".to_vec(), 100u16),
-            (b"key3".to_vec(), 200u16),
+            (b"key1".to_vec(), 42u64),
+            (b"key2".to_vec(), 100u64),
+            (b"key3".to_vec(), 200u64),
         ];
         create_test_index_file(&dir_path, "test_multiple", &entries);
 
@@ -387,9 +398,9 @@ mod tests {
         let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
         let entries = vec![
-            (b"k".to_vec(), 1u16),
-            (b"key".to_vec(), 2u16),
-            (b"very_long_key_name".to_vec(), 3u16),
+            (b"k".to_vec(), 1u64),
+            (b"key".to_vec(), 2u64),
+            (b"very_long_key_name".to_vec(), 3u64),
         ];
         create_test_index_file(&dir_path, "test_lengths", &entries);
 
@@ -520,21 +531,21 @@ mod tests {
         assert_eq!(reader.bisect_index(&index, b"key2"), None); // After the key
     }
 
-    fn create_sequential_entries(count: usize) -> Vec<(Vec<u8>, u16)> {
+    fn create_sequential_entries(count: usize) -> Vec<(Vec<u8>, u64)> {
         (0..count)
             .map(|i| {
                 let key = format!("key{:010}", i).into_bytes();
-                let offset = (i * 100) as u16; // Simulate realistic offsets
+                let offset = (i * 100) as u64; // Simulate realistic offsets
                 (key, offset)
             })
             .collect()
     }
 
-    fn create_sparse_entries(count: usize, gap: usize) -> Vec<(Vec<u8>, u16)> {
+    fn create_sparse_entries(count: usize, gap: usize) -> Vec<(Vec<u8>, u64)> {
         (0..count)
             .map(|i| {
                 let key = format!("key{:010}", i * gap).into_bytes();
-                let offset = (i * 100) as u16;
+                let offset = (i * 100) as u64;
                 (key, offset)
             })
             .collect()
@@ -775,7 +786,7 @@ mod tests {
 
         // Create test data in memtable with a mix of values and tombstones
         let memtable = Arc::new(Memtable::new());
-        let num_entries = 100;
+        let num_entries = 1000;
 
         for i in 0..num_entries {
             let key = format!("key{:010}", i).into_bytes();
@@ -819,6 +830,8 @@ mod tests {
                 match result {
                     Some(Record::Value(value)) => {
                         let expected = format!("value{:020}", i);
+                        // dbg!(String::from_utf8_lossy(&value));
+                        // dbg!(&expected);
                         assert_eq!(&value[..], expected.as_bytes());
                     }
                     _ => panic!("Expected value record for key {}", i),

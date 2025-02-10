@@ -8,13 +8,13 @@ use crate::memory::record::Record;
 
 pub struct DataBlockWriter<'a> {
     len: usize,
-    size: u16,
+    size: u64,
     pub(crate) buf_writer: BufWriter<&'a File>,
 }
 
 impl<'a> DataBlockWriter<'a> {
-    pub fn new(file: &'a mut File) -> Self {
-        file.seek(SeekFrom::End(0)).unwrap();
+    pub fn new(file: &'a mut File, start: u64) -> Self {
+        file.seek(SeekFrom::Start(start)).unwrap();
         Self {
             len: 0,
             size: 0,
@@ -23,7 +23,7 @@ impl<'a> DataBlockWriter<'a> {
     }
 
     /// Returns the number of bytes written
-    pub fn append(&mut self, key: &Bytes, value: &Record) -> u16 {
+    pub fn append(&mut self, key: &Bytes, value: &Record) -> u64 {
         let kv_size = match value {
             Record::Value(value) => {
                 let key_size = key.len() as u16;
@@ -33,11 +33,11 @@ impl<'a> DataBlockWriter<'a> {
                 self.buf_writer.write_all(&[0u8]).unwrap();
 
                 self.buf_writer.write_all(&key_size.to_le_bytes()).unwrap();
-                self.buf_writer.write_all(&key).unwrap();
-
                 self.buf_writer
                     .write_all(&value_size.to_le_bytes())
                     .unwrap();
+
+                self.buf_writer.write_all(&key).unwrap();
                 self.buf_writer.write_all(&value).unwrap();
 
                 // type keysize key valuesize value
@@ -54,7 +54,7 @@ impl<'a> DataBlockWriter<'a> {
                 // type key_size key
                 1 + 2 + key_size
             }
-        };
+        } as u64;
 
         self.len += 1;
         self.size += kv_size;
@@ -65,8 +65,8 @@ impl<'a> DataBlockWriter<'a> {
         self.len
     }
 
-    pub fn size(&self) -> u16 {
-        self.size as u16
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 

@@ -35,7 +35,7 @@ impl SstWriter {
 
         let mut index = Index::new();
 
-        let mut cur_block = DataBlockWriter::new(&mut datafile);
+        let mut cur_block = DataBlockWriter::new(&mut datafile, 0);
 
         let mut offset = 0;
         let mut last_kv_size = 0;
@@ -49,12 +49,12 @@ impl SstWriter {
             last_kv_size = cur_block.append(kv.key(), kv.value());
             offset += last_kv_size;
 
-            if cur_block.size() > self.config.block_size {
+            if cur_block.size() > self.config.block_size as u64 {
                 // flush current block via drop
                 drop(cur_block);
 
                 // create new current block
-                cur_block = DataBlockWriter::new(&mut datafile);
+                cur_block = DataBlockWriter::new(&mut datafile, offset);
             }
         }
 
@@ -145,10 +145,14 @@ mod tests {
                     as usize;
             index_pos += 2;
 
+            dbg!(key_len);
+
             // Read key
             let key = &index_contents[index_pos..index_pos + key_len];
             let key_str = String::from_utf8_lossy(key);
             assert!(key_str.starts_with("key")); // Verify key format
+
+            dbg!(&key_str);
 
             // Verify key length matches the stored length
             assert_eq!(
@@ -165,10 +169,12 @@ mod tests {
 
             index_pos += key_len;
 
-            // Read offset (u16)
+            // Read offset (u64)
             let offset =
-                u16::from_le_bytes(index_contents[index_pos..index_pos + 2].try_into().unwrap());
-            index_pos += 2;
+                u64::from_le_bytes(index_contents[index_pos..index_pos + 8].try_into().unwrap());
+            index_pos += 8;
+
+            dbg!(offset);
 
             // Verify offset is increasing
             assert!(
@@ -195,6 +201,12 @@ mod tests {
                     as usize;
             data_pos += 2;
 
+            // Read value size (2 bytes)
+            let value_size =
+                u16::from_le_bytes(data_contents[data_pos..data_pos + 2].try_into().unwrap())
+                    as usize;
+            data_pos += 2;
+
             // Verify key size matches our fixed-width format
             assert_eq!(
                 key_size, 13,
@@ -211,12 +223,6 @@ mod tests {
                 "Key size in data file doesn't match actual key length"
             );
             data_pos += key_size;
-
-            // Read value size (2 bytes)
-            let value_size =
-                u16::from_le_bytes(data_contents[data_pos..data_pos + 2].try_into().unwrap())
-                    as usize;
-            data_pos += 2;
 
             // Verify value size matches our fixed-width format (5 for "value" + 20 for number)
             assert_eq!(
@@ -235,7 +241,7 @@ mod tests {
             );
             data_pos += value_size;
 
-            println!("{}: {}", key_str, value_str);
+            // println!("{}: {}", key_str, value_str);
 
             num_records += 1;
         }
@@ -264,7 +270,7 @@ mod tests {
             index_pos += key_len;
 
             // Skip offset verification as it's implementation dependent
-            index_pos += 2;
+            index_pos += 8;
         }
     }
 
@@ -299,7 +305,7 @@ mod tests {
         while pos < index_contents.len() {
             let key_len =
                 u16::from_le_bytes(index_contents[pos..pos + 2].try_into().unwrap()) as usize;
-            pos += 2 + key_len + 2; // Skip key length, key, and offset
+            pos += 2 + key_len + 8; // Skip key length, key, and offset
             num_blocks += 1;
         }
 
