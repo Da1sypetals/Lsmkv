@@ -4,12 +4,14 @@ use bytes::Bytes;
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
-use std::io::Write;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+/// This is index in the Index array.
 pub enum BisectResult {
-    Exact(u64),
-    Range(u64, u64),
+    /// Use: index[idx] to get the exact offset
+    Exact(usize),
+    /// Use: index[left], index[right] to get the range of two offsets
+    Range(usize, usize),
 }
 
 pub struct SstReader {
@@ -25,25 +27,34 @@ impl SstReader {
     pub fn get(&self, key: &[u8]) -> Option<Record> {
         let index = self.get_index();
 
+        // dbg!(&index);
+
         match self.bisect_index(&index, key) {
             Some(BisectResult::Range(left, right)) => {
-                println!("Left: {}, Right: {}", left, right);
+                let left_offset = index[left].1;
+                let right_offset = index[right].1;
+                // println!("Left: {}, Right: {}", left, right);
                 let mut file = File::open(format!("{}/{}.data", self.dir, self.filename)).unwrap();
 
                 // Seek to the left offset position
                 file.seek(std::io::SeekFrom::Start(left as u64)).unwrap();
 
                 // Read and decode records until we find the key or reach right offset
-                let mut pos = left as u64;
+                let mut pos = left_offset as u64;
                 let mut buf = Vec::new();
 
-                while pos < right as u64 {
+                while pos <= right_offset as u64 {
                     // Read record type
                     buf.resize(1, 0);
                     file.read_exact(&mut buf).unwrap();
                     let record_type = buf[0];
 
                     match record_type {
+                        /*
+                        If record is value:
+                            if key match, retrieve value;
+                            else, seek to next kv pair.
+                        */
                         0 => {
                             // Value record
                             // Read key size
@@ -70,7 +81,6 @@ impl SstReader {
 
                                 return Some(Record::Value(Bytes::copy_from_slice(&buf)));
                             } else {
-                                println!("Skipping key {}", String::from_utf8_lossy(key));
                                 // Skip value
                                 buf.resize(2, 0);
                                 file.read_exact(&mut buf).unwrap();
@@ -82,17 +92,33 @@ impl SstReader {
                         }
                         1 => {
                             // Tomb record
-                            return Some(Record::Tomb);
+                            // Read key size
+                            buf.resize(2, 0);
+                            file.read_exact(&mut buf).unwrap();
+                            let key_size =
+                                u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+
+                            // Read key
+                            buf.resize(key_size, 0);
+                            file.read_exact(&mut buf).unwrap();
+
+                            if &buf == key {
+                                // Read tomb
+                                return Some(Record::Tomb);
+                            }
+                            // else do nothing (to skip this value), since cursor is at the end of this KV pair.
                         }
                         _ => panic!("Invalid record type"),
                     }
 
                     pos = file.stream_position().unwrap();
+                    // println!("Pos: {}", pos);
                 }
 
                 None
             }
-            Some(BisectResult::Exact(offset)) => {
+            Some(BisectResult::Exact(idx)) => {
+                let offset = index[idx as usize].1;
                 let mut file = File::open(format!("{}/{}.data", self.dir, self.filename)).unwrap();
                 file.seek(std::io::SeekFrom::Start(offset as u64)).unwrap();
 
@@ -133,23 +159,38 @@ impl SstReader {
                         Some(Record::Value(Bytes::copy_from_slice(&buf)))
                     }
                     1 => {
+                        println!("Tomb");
                         // Tomb record
+                        buf.resize(2, 0);
+                        file.read_exact(&mut buf).unwrap();
+                        let key_size =
+                            u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+
+                        // Read key
+                        buf.resize(key_size, 0);
+                        file.read_exact(&mut buf).unwrap();
+
+                        // Verify this is our key (it should be, since we got an exact match)
+                        // also  run on release mode
+                        assert_eq!(&buf, key, "Key mismatch in exact match case");
+
                         Some(Record::Tomb)
                     }
-                    _ => panic!("Invalid record type"),
+                    type_id => panic!("Invalid record type: type_id = {}", type_id),
                 }
             }
-            None => None,
+            None => {
+                // println!("Not found!");
+                None
+            }
         }
     }
 
-    /// Bisect the key in the index, returning the nearest two offsets (lower, upper)
-    /// Returns (lower_idx, upper_idx) where:
-    /// - If key is found exactly, both indices point to that key's position
-    /// - If key is not found, lower_idx points to the largest key smaller than the target,
-    ///     and upper_idx points to the smallest key larger than the target
-    /// - If key is smaller than all keys, returns None
-    /// - If key is larger than all keys, returns None
+    /// Bisect the key in the index, returning the nearest index in Index array
+    /// Returns:
+    ///  - None if the key is not found
+    ///  - Some(BisectResult::Exact(idx)) if the key is found exactly
+    ///  - Some(BisectResult::Range(left, right)) if the key is not found but in the range of two keys in Index array
     fn bisect_index(&self, index: &Index, key: &[u8]) -> Option<BisectResult> {
         if index.is_empty() {
             return None;
@@ -167,7 +208,7 @@ impl SstReader {
         while left <= right {
             let mid = left + (right - left) / 2;
             match key.cmp(&index[mid].0) {
-                std::cmp::Ordering::Equal => return Some(BisectResult::Exact(mid as u64)),
+                std::cmp::Ordering::Equal => return Some(BisectResult::Exact(mid)),
                 std::cmp::Ordering::Less => {
                     if mid == 0 {
                         return None;
@@ -186,7 +227,7 @@ impl SstReader {
         // If we get here, the key wasn't found exactly
         // left is now the insertion point
         // right is the largest element smaller than key
-        Some(BisectResult::Range(right as u64, left as u64))
+        Some(BisectResult::Range(right, left))
     }
 
     fn get_index(&self) -> Index {
@@ -612,7 +653,7 @@ mod tests {
         for &pattern in &test_patterns {
             let result = reader.bisect_index(&index, pattern.as_bytes());
             let expected_idx = pattern[3..13].parse::<usize>().unwrap();
-            assert_eq!(result, Some(BisectResult::Exact(expected_idx as u64)));
+            assert_eq!(result, Some(BisectResult::Exact(expected_idx)));
         }
 
         // Test binary search with values between entries
@@ -629,6 +670,208 @@ mod tests {
                 reader.bisect_index(&index, pattern.as_bytes()),
                 Some(*expected)
             );
+        }
+    }
+
+    #[test]
+    fn test_get_basic() {
+        let temp_dir = tempdir().unwrap();
+        let dir_path = temp_dir.path().to_str().unwrap().to_string();
+        let test_name = "test_basic";
+
+        // Create test data in memtable
+        let memtable = Arc::new(Memtable::new());
+        memtable.put(b"key1", b"value1");
+        memtable.put(b"key2", b"value2");
+        memtable.delete(b"key3"); // Add a tombstone
+
+        // Write SST file
+        let config = SstConfig { block_size: 4096 };
+        let writer = SstWriter::new(
+            config,
+            dir_path.clone(),
+            test_name.to_string(),
+            memtable.clone(),
+        );
+        writer.build();
+
+        // Read using SstReader
+        let reader = SstReader {
+            dir: dir_path,
+            filename: test_name.to_string(),
+        };
+
+        // Test getting existing values
+        match reader.get(b"key1") {
+            Some(Record::Value(value)) => assert_eq!(&value[..], b"value1"),
+            _ => panic!("Expected value record for key1"),
+        }
+
+        match reader.get(b"key2") {
+            Some(Record::Value(value)) => assert_eq!(&value[..], b"value2"),
+            _ => panic!("Expected value record for key2"),
+        }
+
+        // Test getting tombstone
+        match reader.get(b"key3") {
+            Some(Record::Tomb) => (), // Expected
+            _ => panic!("Expected tomb record for key3"),
+        }
+
+        // Test getting non-existent key
+        assert!(reader.get(b"key4").is_none());
+    }
+
+    #[test]
+    fn test_get_with_block_boundaries() {
+        let temp_dir = tempdir().unwrap();
+        let dir_path = temp_dir.path().to_str().unwrap().to_string();
+        let test_name = "test_blocks";
+
+        // Create test data in memtable with large values to force block boundaries
+        let memtable = Arc::new(Memtable::new());
+        let large_value: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+
+        for i in 0..10 {
+            let key = format!("key{:010}", i).into_bytes();
+            memtable.put(&key, &large_value);
+        }
+
+        // Write SST file with small block size to force multiple blocks
+        let config = SstConfig { block_size: 512 };
+        let writer = SstWriter::new(
+            config,
+            dir_path.clone(),
+            test_name.to_string(),
+            memtable.clone(),
+        );
+        writer.build();
+
+        // Read using SstReader
+        let reader = SstReader {
+            dir: dir_path,
+            filename: test_name.to_string(),
+        };
+
+        // Test reading values across block boundaries
+        for i in 0..10 {
+            let key = format!("key{:010}", i).into_bytes();
+            match reader.get(&key) {
+                Some(Record::Value(value)) => assert_eq!(&value[..], &large_value),
+                _ => panic!("Expected value record for key {}", i),
+            }
+        }
+
+        // Test reading non-existent keys
+        assert!(reader.get(b"nonexistent").is_none());
+        assert!(reader.get(b"key0000000010").is_none());
+    }
+
+    #[test]
+    fn test_get_mixed_records() {
+        let temp_dir = tempdir().unwrap();
+        let dir_path = temp_dir.path().to_str().unwrap().to_string();
+        let test_name = "test_mixed";
+
+        // Create test data in memtable with a mix of values and tombstones
+        let memtable = Arc::new(Memtable::new());
+        let num_entries = 100;
+
+        for i in 0..num_entries {
+            let key = format!("key{:010}", i).into_bytes();
+            if i % 3 == 0 {
+                memtable.delete(&key);
+            } else {
+                let value = format!("value{:020}", i).into_bytes();
+                memtable.put(&key, &value);
+            }
+        }
+
+        // Write SST file
+        let config = SstConfig { block_size: 4096 };
+        let writer = SstWriter::new(
+            config,
+            dir_path.clone(),
+            test_name.to_string(),
+            memtable.clone(),
+        );
+        writer.build();
+
+        // Read using SstReader
+        let reader = SstReader {
+            dir: dir_path,
+            filename: test_name.to_string(),
+        };
+
+        // Test reading values and tombstones
+        for i in 0..num_entries {
+            let key = format!("key{:010}", i).into_bytes();
+            let result = reader.get(&key);
+
+            if i % 3 == 0 {
+                // Should be a tombstone
+                match result {
+                    Some(Record::Tomb) => (),
+                    _ => panic!("Expected tomb record for key {}", i),
+                }
+            } else {
+                // Should be a value
+                match result {
+                    Some(Record::Value(value)) => {
+                        let expected = format!("value{:020}", i);
+                        assert_eq!(&value[..], expected.as_bytes());
+                    }
+                    _ => panic!("Expected value record for key {}", i),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_binary_data() {
+        let temp_dir = tempdir().unwrap();
+        let dir_path = temp_dir.path().to_str().unwrap().to_string();
+        let test_name = "test_binary";
+
+        // Create test data in memtable with binary data
+        let memtable = Arc::new(Memtable::new());
+
+        // Add binary keys and values
+        let binary_pairs = vec![
+            (
+                vec![0, 255, 10, 13, 32, 1, 2, 3],
+                vec![255, 0, 128, 64, 32, 16, 8, 4],
+            ),
+            (vec![1, 2, 3, 4], vec![5, 6, 7, 8]),
+            (vec![255; 10], vec![0; 10]),
+        ];
+
+        for (key, value) in binary_pairs.iter() {
+            memtable.put(key, value);
+        }
+
+        // Write SST file
+        let config = SstConfig { block_size: 4096 };
+        let writer = SstWriter::new(
+            config,
+            dir_path.clone(),
+            test_name.to_string(),
+            memtable.clone(),
+        );
+        writer.build();
+
+        // Read using SstReader
+        let reader = SstReader {
+            dir: dir_path,
+            filename: test_name.to_string(),
+        };
+
+        // Test reading binary data
+        for (key, value) in binary_pairs.iter() {
+            match reader.get(key) {
+                Some(Record::Value(v)) => assert_eq!(&v[..], value),
+                _ => panic!("Expected value record for binary key"),
+            }
         }
     }
 }

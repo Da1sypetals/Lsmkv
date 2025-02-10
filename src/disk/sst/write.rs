@@ -38,6 +38,7 @@ impl SstWriter {
         let mut cur_block = DataBlockWriter::new(&mut datafile);
 
         let mut offset = 0;
+        let mut last_kv_size = 0;
 
         for kv in &self.memtable.map {
             if cur_block.len() == 0 {
@@ -45,17 +46,23 @@ impl SstWriter {
                 index.push((kv.key().clone(), offset));
             }
 
-            cur_block.append(kv.key(), kv.value());
+            last_kv_size = cur_block.append(kv.key(), kv.value());
+            offset += last_kv_size;
 
             if cur_block.size() > self.config.block_size {
-                offset += cur_block.size();
-
                 // flush current block via drop
                 drop(cur_block);
 
                 // create new current block
                 cur_block = DataBlockWriter::new(&mut datafile);
             }
+        }
+
+        // the last key
+        let memtable_last = self.memtable.map.iter().last().unwrap();
+        if index.last().unwrap().0 != memtable_last.key() {
+            let last_key_offset = offset - last_kv_size;
+            index.push((memtable_last.key().clone(), last_key_offset));
         }
 
         let indexfile = File::create(&format!("{}/{}.index", self.dir, self.filename)).unwrap();

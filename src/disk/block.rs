@@ -46,8 +46,13 @@ impl<'a> DataBlockWriter<'a> {
             Record::Tomb => {
                 // for Tomb
                 self.buf_writer.write_all(&[1u8]).unwrap();
-                // type
-                1
+                let key_size = key.len() as u16;
+
+                self.buf_writer.write_all(&key_size.to_le_bytes()).unwrap();
+                self.buf_writer.write_all(&key).unwrap();
+
+                // type key_size key
+                1 + 2 + key_size
             }
         };
 
