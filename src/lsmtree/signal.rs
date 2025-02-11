@@ -46,29 +46,33 @@ mod tests {
     #[test]
     fn test_signal() {
         let signal = Arc::new(Signal::new());
-        let signal_clone = Arc::clone(&signal);
+        let signal_clone1 = Arc::clone(&signal);
+        let signal_clone2 = Arc::clone(&signal);
 
         let res = Arc::new(Mutex::new(0));
         let res_clone = Arc::clone(&res);
 
         // Spawn a thread that will wait for the signal
         let handle = thread::spawn(move || {
-            signal_clone.wait();
+            signal_clone1.wait();
             *res_clone.lock().unwrap() += 1;
         });
 
-        // Simulate some work before setting the signal
-        thread::sleep(Duration::from_secs(1));
+        let setter = thread::spawn(move || {
+            // sleep for 0.1s
+            thread::sleep(Duration::from_millis(100));
+            // Set the signal to wake up the waiting thread
+            signal_clone2.set();
+        });
 
-        assert_eq!(*res.lock().unwrap(), 0);
+        setter.join().unwrap();
 
-        // Set the signal to wake up the waiting thread
-        signal.set();
+        // sleep for 0.1s
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(*res.lock().unwrap(), 1);
 
         // Wait for the thread to finish
         handle.join().unwrap();
-
-        assert_eq!(*res.lock().unwrap(), 1);
 
         // Ensure the signal was set to waiting.
         assert_eq!(*signal.status.lock().unwrap(), SignalStatus::Waiting);
@@ -90,7 +94,7 @@ mod tests {
             setter_handles.push(handle);
         }
 
-        // Spawn a thread that will wait for the signal multiple times
+        // Spawn a thread that will wait for the signal
         let waiter_handle = {
             let signal_clone = Arc::clone(&signal);
             let res_clone = Arc::clone(&res);

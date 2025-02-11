@@ -1,3 +1,4 @@
+use super::signal::Signal;
 use crate::config::lsm::LsmConfig;
 use crate::config::memory::MemoryConfig;
 use crate::config::sst::SstConfig;
@@ -9,18 +10,16 @@ use crate::memory::memory::LsmMemory;
 use crate::memory::memtable::Memtable;
 use crate::memory::record::Record;
 use bytes::Bytes;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use scc::ebr::Guard;
+use scc::Queue;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use tempfile::tempdir;
-
-use super::signal::Signal;
-use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
-use rand::SeedableRng;
-use scc::Queue;
 
 pub struct LsmTree {
     pub(crate) config: LsmConfig,
@@ -51,11 +50,11 @@ impl LsmTree {
 
         if current_size > self.config.memory.freeze_size {
             let mut mem = self.mem.write().unwrap();
-            mem.freeze_current(self.config.memory.freeze_size);
+            mem.try_freeze_current(self.config.memory.freeze_size);
 
             let guard = Guard::new();
             if mem.frozen_sizes.iter(&guard).sum::<usize>() > self.config.memory.flush_size {
-                println!("Flush!");
+                dbg!("Flush!");
                 self.flush();
             }
         }
@@ -87,8 +86,8 @@ impl LsmTree {
 
 impl LsmTree {
     pub fn empty(config: LsmConfig) -> Self {
-        let flush_signal_memory = Arc::new(Signal::new());
-        let flush_signal_flusher = flush_signal_memory.clone();
+        let flush_signal = Arc::new(Signal::new());
+        let flush_signal_flusher = flush_signal.clone();
 
         let mem = Arc::new(RwLock::new(LsmMemory::empty()));
         let mem_flusher = mem.clone();
@@ -115,6 +114,8 @@ impl LsmTree {
                         table,
                     );
 
+                    sst.build();
+
                     mem.frozen.pop();
                 }
             }
@@ -124,7 +125,7 @@ impl LsmTree {
             mem,
             disk: LsmDisk::empty(config.path.clone()),
             config,
-            flush_signal: Arc::new(Signal::new()),
+            flush_signal,
             flush_handle,
         };
 
@@ -133,6 +134,18 @@ impl LsmTree {
 
     pub fn flush(&self) {
         self.flush_signal.set();
+    }
+
+    pub fn persist(&mut self) {
+        self.mem.write().unwrap().force_freeze_current();
+        self.flush();
+    }
+}
+
+impl Drop for LsmTree {
+    fn drop(&mut self) {
+        self.mem.write().unwrap().force_freeze_current();
+        self.flush();
     }
 }
 

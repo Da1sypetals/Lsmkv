@@ -70,7 +70,7 @@ impl LsmMemory {
 
 // privates
 impl LsmMemory {
-    pub(crate) fn freeze_current(&mut self, freeze_size: usize) {
+    pub(crate) fn try_freeze_current(&mut self, freeze_size: usize) {
         // println!("Freezing...");
         let current_size = self.active_size.load(std::sync::atomic::Ordering::Relaxed);
         if current_size >= freeze_size {
@@ -82,6 +82,18 @@ impl LsmMemory {
             self.active_size
                 .store(0, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    pub(crate) fn force_freeze_current(&mut self) {
+        // println!("Freezing...");
+        let current_size = self.active_size.load(std::sync::atomic::Ordering::Relaxed);
+        // really freeze
+        self.frozen.push(self.active.clone()); // clone the arc
+        self.frozen_sizes.push(current_size);
+
+        self.active = Arc::new(Memtable::new());
+        self.active_size
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -107,7 +119,7 @@ mod tests {
             memory.put(&key, &value);
 
             // Try to freeze after each insert with a relatively small freeze size
-            memory.freeze_current(1000);
+            memory.try_freeze_current(1000);
         }
 
         // Verify we have multiple frozen memtables
@@ -208,7 +220,7 @@ mod tests {
             // Create values of increasing size
             let value = vec![b'x'; i * 100];
             memory.put(&key, &value);
-            memory.freeze_current(1000); // Small freeze size to trigger frequent freezes
+            memory.try_freeze_current(1000); // Small freeze size to trigger frequent freezes
         }
 
         // Verify frozen memtable count
@@ -274,7 +286,7 @@ mod tests {
                 assert!(matches!(memory.get(&key).unwrap(), Record::Tomb));
             }
 
-            memory.freeze_current(1000);
+            memory.try_freeze_current(1000);
         }
 
         // Verify final state
@@ -321,7 +333,7 @@ mod tests {
         );
 
         // Test delete after freeze
-        memory.freeze_current(100);
+        memory.try_freeze_current(100);
         memory.delete(b"large_key");
         assert!(matches!(memory.get(b"large_key").unwrap(), Record::Tomb));
     }
@@ -449,7 +461,7 @@ mod tests {
             memory.put(&key, &value);
 
             // Try to freeze
-            memory.freeze_current(100); // Small size to encourage freezing
+            memory.try_freeze_current(100); // Small size to encourage freezing
 
             // Read after potential freeze
             let result = memory.get(&key);

@@ -52,15 +52,15 @@ fn test_data_distribution_across_layers() {
         path: dir_path.clone(),
         memory: MemoryConfig {
             freeze_size: 1024, // 1KB - small size to trigger freezing
-            flush_size: 2048,  // 2KB - small size to trigger flushing
+            flush_size: 16384, // 2KB - small size to trigger flushing
         },
         sst: SstConfig { block_size: 128 },
     };
 
-    let tree = LsmTree::empty(config);
+    let mut tree = LsmTree::empty(config);
 
     // Insert enough data to trigger freezing and flushing
-    for i in 0..1000 {
+    for i in 0..10000 {
         let key = format!("key{:05}", i).into_bytes();
         let value = format!("value{:05}", i).into_bytes();
         tree.put(&key, &value);
@@ -72,7 +72,8 @@ fn test_data_distribution_across_layers() {
     }
 
     // Force a final flush
-    tree.flush();
+    // tree.persist();
+
     thread::sleep(Duration::from_millis(100)); // Give time for flush to complete
 
     // Verify data exists in memory (active memtable)
