@@ -1,4 +1,4 @@
-use super::memtable::Memtable;
+use super::{memtable::Memtable, record::Record};
 use bytes::Bytes;
 use std::{
     collections::VecDeque,
@@ -23,18 +23,18 @@ impl LsmMemory {
         self.active.put(key, value);
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+    pub fn get(&self, key: &[u8]) -> Option<Record> {
         let opt_rec_active = self.active.get(key);
-        if let Some(rec) = opt_rec_active {
-            return rec.as_search_result();
+        if opt_rec_active.is_some() {
+            return opt_rec_active;
         }
 
         // Not found in active memtable
 
         for table in &self.frozen {
-            let opt_rec = table.get(key);
-            if let Some(rec) = opt_rec {
-                return rec.as_search_result();
+            let frozen_value = table.get(key);
+            if frozen_value.is_some() {
+                return frozen_value;
             }
         }
 
@@ -116,7 +116,7 @@ mod tests {
             assert!(value.is_some(), "Failed to retrieve key{}", i);
             assert_eq!(
                 value.unwrap(),
-                format!("value{}", i).into_bytes(),
+                Record::Value(format!("value{}", i).into()),
                 "Incorrect value for key{}",
                 i
             );
@@ -125,7 +125,10 @@ mod tests {
         // Test deletion
         let test_key = b"key0";
         memory.delete(test_key);
-        assert!(memory.get(test_key).is_none(), "Key should be deleted");
+        assert!(
+            matches!(memory.get(test_key).unwrap(), Record::Tomb),
+            "Key should be deleted"
+        );
 
         dbg!(memory.frozen.len());
     }
@@ -150,7 +153,10 @@ mod tests {
 
                     // Verify the write
                     let result = mem.get(&key);
-                    assert_eq!(result.unwrap(), Bytes::copy_from_slice(&value));
+                    assert_eq!(
+                        result.unwrap(),
+                        Record::Value(Bytes::copy_from_slice(&value))
+                    );
                 }
             });
             handles.push(handle);
@@ -208,7 +214,7 @@ mod tests {
             let key = format!("key{}", i).into_bytes();
             let value = vec![b'x'; i * 100];
             let result = memory.get(&key);
-            assert_eq!(result.unwrap(), Bytes::from(value));
+            assert_eq!(result.unwrap(), Record::Value(Bytes::from(value)));
         }
     }
 
@@ -229,12 +235,15 @@ mod tests {
             memory.put(&key, &value);
 
             // Get (should exist)
-            assert_eq!(memory.get(&key).unwrap(), Bytes::from(value.clone()));
+            assert_eq!(
+                memory.get(&key).unwrap(),
+                Record::Value(Bytes::from(value.clone()))
+            );
 
             // Delete every third key
             if i % 3 == 0 {
                 memory.delete(&key);
-                assert!(memory.get(&key).is_none());
+                assert!(matches!(memory.get(&key).unwrap(), Record::Tomb));
             }
 
             memory.try_freeze_current(1000);
@@ -247,10 +256,10 @@ mod tests {
 
             if i % 3 == 0 {
                 // Deleted keys should not exist
-                assert!(memory.get(&key).is_none());
+                assert!(matches!(memory.get(&key).unwrap(), Record::Tomb));
             } else {
                 // Other keys should exist with correct values
-                assert_eq!(memory.get(&key).unwrap(), Bytes::from(value));
+                assert_eq!(memory.get(&key).unwrap(), Record::Value(Bytes::from(value)));
             }
         }
     }
@@ -268,18 +277,24 @@ mod tests {
         memory.put(b"empty_value", b"");
         memory.put(b"", b"");
 
-        assert_eq!(memory.get(b"").unwrap(), Bytes::from(""));
-        assert_eq!(memory.get(b"empty_value").unwrap(), Bytes::from(""));
+        assert_eq!(memory.get(b"").unwrap(), Record::Value(Bytes::from("")));
+        assert_eq!(
+            memory.get(b"empty_value").unwrap(),
+            Record::Value(Bytes::from(""))
+        );
 
         // Test large values
         let large_value = vec![b'x'; 1_000_000];
         memory.put(b"large_key", &large_value);
-        assert_eq!(memory.get(b"large_key").unwrap(), Bytes::from(large_value));
+        assert_eq!(
+            memory.get(b"large_key").unwrap(),
+            Record::Value(Bytes::from(large_value))
+        );
 
         // Test delete after freeze
         memory.try_freeze_current(100);
         memory.delete(b"large_key");
-        assert!(memory.get(b"large_key").is_none());
+        assert!(matches!(memory.get(b"large_key").unwrap(), Record::Tomb));
     }
 
     #[test]
@@ -351,7 +366,14 @@ mod tests {
             let result = memory.get(&key);
             // Key should either be None or contain a valid value
             if let Some(value) = result {
-                assert!(String::from_utf8_lossy(&value).starts_with(&format!("value{}-", i)));
+                match value {
+                    Record::Value(bytes) => {
+                        assert!(
+                            String::from_utf8_lossy(&bytes).starts_with(&format!("value{}-", i))
+                        );
+                    }
+                    _ => panic!("Expected a value record"),
+                }
             }
         }
     }
@@ -381,7 +403,7 @@ mod tests {
             );
             assert_eq!(
                 result.unwrap(),
-                Bytes::from(value.clone()),
+                Record::Value(Bytes::from(value.clone())),
                 "Wrong value read for key {}",
                 i
             );
@@ -403,7 +425,7 @@ mod tests {
             assert!(result.is_some(), "Failed to read key {} after freeze", i);
             assert_eq!(
                 result.unwrap(),
-                Bytes::from(value.clone()),
+                Record::Value(Bytes::from(value.clone())),
                 "Wrong value read for key {} after freeze",
                 i
             );
@@ -422,7 +444,7 @@ mod tests {
             );
             assert_eq!(
                 result.unwrap(),
-                Bytes::from(expected_value),
+                Record::Value(Bytes::from(expected_value)),
                 "Wrong value read for key {} in final verification",
                 i
             );

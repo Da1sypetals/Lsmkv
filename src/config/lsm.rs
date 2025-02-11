@@ -1,5 +1,6 @@
 use super::{memory::MemoryConfig, sst::SstConfig};
 use crate::{
+    disk::disk::LsmDisk,
     lsmtree::tree::LsmTree,
     memory::{memory::LsmMemory, memtable::Memtable},
 };
@@ -17,7 +18,7 @@ pub struct LsmConfig {
 }
 
 impl LsmConfig {
-    pub fn empty(self) -> LsmTree {
+    pub fn build_empty(self, dir: String) -> LsmTree {
         let mem = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
@@ -27,6 +28,7 @@ impl LsmConfig {
         LsmTree {
             mem: Arc::new(RwLock::new(mem)),
             mem_config: self.memory,
+            disk: LsmDisk::empty(dir),
         }
     }
 }

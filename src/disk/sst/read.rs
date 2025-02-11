@@ -31,8 +31,8 @@ pub enum BisectResult {
 }
 
 pub struct SstReader {
-    dir: String,
-    filename: String,
+    pub(crate) dir: String,
+    pub(crate) filename: String,
 }
 
 impl SstReader {
