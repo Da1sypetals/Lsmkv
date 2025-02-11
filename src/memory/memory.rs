@@ -49,7 +49,8 @@ impl LsmMemory {
         // Not found in active memtable
 
         let guard = Guard::new();
-        for table in self.frozen.iter(&guard).rev() {
+
+        for table in self.frozen.iter(&guard).collect::<Vec<_>>().iter().rev() {
             let frozen_value = table.get(key);
             if frozen_value.is_some() {
                 return frozen_value;

@@ -16,6 +16,10 @@ use std::thread::JoinHandle;
 use tempfile::tempdir;
 
 use super::signal::Signal;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
+use scc::Queue;
 
 pub struct LsmTree {
     // ................................................................................
@@ -382,6 +386,78 @@ mod tests {
                         i
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    /// Tests large-scale operations with overwrites and deletions
+    fn test_inmem_large_scale_operations() {
+        let mut tree = create_test_tree();
+        let small_freeze_size = 1000; // Small size to trigger freezes
+        tree.mem_config.freeze_size = small_freeze_size;
+        let tree = Arc::new(tree);
+
+        // Write 10,000 initial records
+        for i in 0..10_000 {
+            let key = format!("key-{}", i).into_bytes();
+            let value = format!("value-{}", i).into_bytes();
+            tree.put(&key, &value);
+        }
+
+        // Overwrite first 100 records with new values
+        for i in 0..100 {
+            let key = format!("key-{}", i).into_bytes();
+            let new_value = format!("new-value-{}", i).into_bytes();
+            tree.put(&key, &new_value);
+        }
+
+        // Verify new values for first 100 records
+        for i in 0..100 {
+            let key = format!("key-{}", i).into_bytes();
+            let expected = format!("new-value-{}", i);
+            assert_eq!(
+                tree.get(&key).unwrap(),
+                Bytes::from(expected),
+                "Overwritten value mismatch for key {}",
+                i
+            );
+        }
+
+        // Create a deterministic RNG for reproducible random deletions
+        let mut indices_to_delete: Vec<usize> = (0..10_000).collect();
+        let seed: u64 = 114514; // Fixed seed for reproducibility
+        let mut rng = StdRng::seed_from_u64(seed);
+        indices_to_delete.shuffle(&mut rng);
+        let indices_to_delete = &indices_to_delete[0..1000]; // Take first 1000 indices
+
+        // Delete 1000 random records
+        for &i in indices_to_delete {
+            let key = format!("key-{}", i).into_bytes();
+            tree.delete(&key);
+        }
+
+        // Verify deletions
+        for &i in indices_to_delete {
+            let key = format!("key-{}", i).into_bytes();
+            assert_eq!(tree.get(&key), None, "Key {} should have been deleted", i);
+        }
+
+        // Verify non-deleted records still exist with correct values
+        for i in 0..10_000 {
+            if !indices_to_delete.contains(&i) {
+                let key = format!("key-{}", i).into_bytes();
+                let expected = if i < 100 {
+                    format!("new-value-{}", i)
+                } else {
+                    format!("value-{}", i)
+                };
+                assert_eq!(
+                    tree.get(&key).unwrap(),
+                    Bytes::from(expected),
+                    "Non-deleted value mismatch for key {}",
+                    i
+                );
             }
         }
     }
