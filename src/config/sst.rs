@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SstConfig {
     pub(crate) block_size: u16,
-    
 }

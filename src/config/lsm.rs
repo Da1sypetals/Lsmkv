@@ -11,7 +11,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc, RwLock},
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct LsmConfig {
     pub(crate) path: String,
     pub(crate) memory: MemoryConfig,
@@ -29,10 +29,10 @@ impl LsmConfig {
 
         LsmTree {
             mem: Arc::new(RwLock::new(mem)),
-            mem_config: self.memory,
+            config: self,
             disk: LsmDisk::empty(dir),
             // currently not used
-            flush_signal: Signal::new(),
+            flush_signal: Arc::new(Signal::new()),
             // currently not used
             flush_handle: std::thread::spawn(|| {}),
         }

@@ -9,6 +9,7 @@ use crate::memory::memory::LsmMemory;
 use crate::memory::memtable::Memtable;
 use crate::memory::record::Record;
 use bytes::Bytes;
+use scc::ebr::Guard;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -22,11 +23,12 @@ use rand::SeedableRng;
 use scc::Queue;
 
 pub struct LsmTree {
+    pub(crate) config: LsmConfig,
+
     // ................................................................................
     // ............................... Memory component ...............................
     // ................................................................................
     pub(crate) mem: Arc<RwLock<LsmMemory>>,
-    pub(crate) mem_config: MemoryConfig,
 
     // ................................................................................
     // ............................... Disk component .................................
@@ -34,7 +36,7 @@ pub struct LsmTree {
     pub(crate) disk: LsmDisk,
 
     // ................................. Flush ........................................
-    pub(crate) flush_signal: Signal,
+    pub(crate) flush_signal: Arc<Signal>,
     pub(crate) flush_handle: JoinHandle<()>,
 }
 
@@ -47,12 +49,16 @@ impl LsmTree {
             mem.active_size.load(std::sync::atomic::Ordering::Relaxed)
         };
 
-        if current_size > self.mem_config.freeze_size {
+        if current_size > self.config.memory.freeze_size {
             let mut mem = self.mem.write().unwrap();
-            mem.freeze_current(self.mem_config.freeze_size);
-        }
+            mem.freeze_current(self.config.memory.freeze_size);
 
-        // todo: periodic flush to disk
+            let guard = Guard::new();
+            if mem.frozen_sizes.iter(&guard).sum::<usize>() > self.config.memory.flush_size {
+                println!("Flush!");
+                self.flush();
+            }
+        }
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Bytes> {
@@ -81,15 +87,48 @@ impl LsmTree {
 
 impl LsmTree {
     pub fn empty(config: LsmConfig) -> Self {
-        let flush_handle = std::thread::spawn(|| {});
+        let flush_signal_memory = Arc::new(Signal::new());
+        let flush_signal_flusher = flush_signal_memory.clone();
 
-        Self {
-            mem: Arc::new(RwLock::new(LsmMemory::empty())),
-            mem_config: config.memory,
-            disk: LsmDisk::new(config.path),
-            flush_signal: Signal::new(),
+        let mem = Arc::new(RwLock::new(LsmMemory::empty()));
+        let mem_flusher = mem.clone();
+
+        let config_clone = config.clone();
+
+        let flush_handle = std::thread::spawn(move || {
+            //
+            loop {
+                flush_signal_flusher.wait();
+
+                let mem = mem_flusher.read().unwrap();
+                while !mem.frozen.is_empty() {
+                    let filename = todo!();
+                    let guard = Guard::new();
+
+                    // clone the arc, use fully qualified name
+                    let table = Arc::clone(mem.frozen.peek(&guard).unwrap());
+
+                    let sst = SstWriter::new(
+                        config_clone.sst,
+                        config_clone.path.clone(),
+                        filename,
+                        table,
+                    );
+
+                    mem.frozen.pop();
+                }
+            }
+        });
+
+        let tree = Self {
+            mem,
+            disk: LsmDisk::empty(config.path.clone()),
+            config,
+            flush_signal: Arc::new(Signal::new()),
             flush_handle,
-        }
+        };
+
+        tree
     }
 
     pub fn flush(&self) {
@@ -115,6 +154,7 @@ mod tests {
     fn create_test_tree() -> LsmTree {
         let config = MemoryConfig {
             freeze_size: 1024 * 1024, // 1MB
+            flush_size: 1024 * 1024,  // unused
         };
 
         let tempdir_string = tempdir().unwrap().into_path().to_str().unwrap().to_string();
@@ -126,10 +166,14 @@ mod tests {
                 frozen: Queue::default(),
                 frozen_sizes: Queue::default(),
             })),
-            mem_config: config,
+            config: LsmConfig {
+                path: "./".to_string(),
+                memory: config,
+                sst: SstConfig { block_size: 1000 },
+            },
             disk: LsmDisk::empty(tempdir_string),
             // currently not used
-            flush_signal: Signal::new(),
+            flush_signal: Arc::new(Signal::new()),
             // currently not used
             flush_handle: std::thread::spawn(|| {}),
         }
@@ -207,7 +251,7 @@ mod tests {
         // this one
         let mut tree = create_test_tree();
         let small_freeze_size = 1000; // Small size to trigger freezes
-        tree.mem_config.freeze_size = small_freeze_size;
+        tree.config.memory.freeze_size = small_freeze_size;
 
         // Insert many key-value pairs to trigger freezes
         for i in 0..1000 {
@@ -256,7 +300,7 @@ mod tests {
     fn test_inmem_concurrent_freeze_trigger() {
         let mut tree = create_test_tree();
         let small_freeze_size = 1000; // Small size to trigger freezes
-        tree.mem_config.freeze_size = small_freeze_size;
+        tree.config.memory.freeze_size = small_freeze_size;
         let tree = Arc::new(tree);
 
         let num_threads = 10; // Number of concurrent threads
@@ -331,7 +375,7 @@ mod tests {
     fn test_inmem_concurrent_write_read() {
         let mut tree = create_test_tree();
         let small_freeze_size = 1000;
-        tree.mem_config.freeze_size = small_freeze_size;
+        tree.config.memory.freeze_size = small_freeze_size;
         let tree = Arc::new(tree);
 
         let num_threads = 10;
@@ -395,7 +439,7 @@ mod tests {
     fn test_inmem_large_scale_operations() {
         let mut tree = create_test_tree();
         let small_freeze_size = 1000; // Small size to trigger freezes
-        tree.mem_config.freeze_size = small_freeze_size;
+        tree.config.memory.freeze_size = small_freeze_size;
         let tree = Arc::new(tree);
 
         // Write 10,000 initial records
@@ -558,10 +602,17 @@ mod tests {
         // Create LSM tree with prefilled components
         let tree = LsmTree {
             mem: Arc::new(RwLock::new(mem)),
-            mem_config: MemoryConfig { freeze_size: 1000 },
+            config: LsmConfig {
+                path: "./".to_string(),
+                memory: MemoryConfig {
+                    freeze_size: 1000,
+                    flush_size: 1000, // unused
+                },
+                sst: SstConfig { block_size: 1000 },
+            },
             disk,
             // currently not used
-            flush_signal: Signal::new(),
+            flush_signal: Arc::new(Signal::new()),
             // currently not used
             flush_handle: std::thread::spawn(|| {}),
         };
@@ -756,12 +807,17 @@ mod tests {
         // Create LSM tree with prefilled components
         let tree = LsmTree {
             mem: Arc::new(RwLock::new(mem)),
-            mem_config: MemoryConfig {
-                freeze_size: 10 * 1024 * 1024,
-            }, // 10MB
+            config: LsmConfig {
+                path: "./".to_string(),
+                memory: MemoryConfig {
+                    freeze_size: 10 * 1024 * 1024,
+                    flush_size: 10 * 1024 * 1024, // unused
+                },
+                sst: SstConfig { block_size: 1000 },
+            },
             disk,
             // currently not used
-            flush_signal: Signal::new(),
+            flush_signal: Arc::new(Signal::new()),
             // currently not used
             flush_handle: std::thread::spawn(|| {}),
         };

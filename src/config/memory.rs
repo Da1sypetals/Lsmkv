@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct MemoryConfig {
     pub(crate) freeze_size: usize,
+    pub(crate) flush_size: usize,
 }
