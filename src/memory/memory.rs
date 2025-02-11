@@ -1,5 +1,6 @@
 use super::{memtable::Memtable, record::Record};
 use bytes::Bytes;
+use scc::{ebr::Guard, Queue};
 use std::{
     collections::VecDeque,
     sync::{atomic::AtomicUsize, Arc},
@@ -15,8 +16,8 @@ pub struct LsmMemory {
     ///     - thus vecdeque must support:
     ///         1. concurrency
     ///         2. .iter() (to support get operation)
-    pub(crate) frozen: VecDeque<Arc<Memtable>>,
-    pub(crate) frozen_sizes: VecDeque<usize>,
+    pub(crate) frozen: Queue<Arc<Memtable>>,
+    pub(crate) frozen_sizes: Queue<usize>,
 }
 
 impl LsmMemory {
@@ -24,8 +25,8 @@ impl LsmMemory {
         Self {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         }
     }
 }
@@ -47,7 +48,8 @@ impl LsmMemory {
 
         // Not found in active memtable
 
-        for table in &self.frozen {
+        let guard = Guard::new();
+        for table in self.frozen.iter(&guard).rev() {
             let frozen_value = table.get(key);
             if frozen_value.is_some() {
                 return frozen_value;
@@ -67,12 +69,13 @@ impl LsmMemory {
 
 // privates
 impl LsmMemory {
-    pub(crate) fn try_freeze_current(&mut self, freeze_size: usize) {
+    pub(crate) fn freeze_current(&mut self, freeze_size: usize) {
+        // println!("Freezing...");
         let current_size = self.active_size.load(std::sync::atomic::Ordering::Relaxed);
         if current_size >= freeze_size {
             // really freeze
-            self.frozen.push_front(self.active.clone()); // clone the arc
-            self.frozen_sizes.push_front(current_size);
+            self.frozen.push(self.active.clone()); // clone the arc
+            self.frozen_sizes.push(current_size);
 
             self.active = Arc::new(Memtable::new());
             self.active_size
@@ -92,8 +95,8 @@ mod tests {
         let mut memory = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         };
 
         // Insert data that should cause multiple freezes
@@ -103,7 +106,7 @@ mod tests {
             memory.put(&key, &value);
 
             // Try to freeze after each insert with a relatively small freeze size
-            memory.try_freeze_current(1000);
+            memory.freeze_current(1000);
         }
 
         // Verify we have multiple frozen memtables
@@ -111,7 +114,8 @@ mod tests {
         dbg!(memory.frozen.len());
 
         // print each frozen memtable size
-        for table in &memory.frozen {
+        let guard = Guard::new();
+        for table in memory.frozen.iter(&guard) {
             let size: usize = table
                 .map
                 .iter()
@@ -157,8 +161,8 @@ mod tests {
         let memory = Arc::new(LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         });
         let mut handles = vec![];
 
@@ -193,8 +197,8 @@ mod tests {
         let mut memory = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         };
 
         // Insert data with varying sizes to trigger multiple freezes
@@ -203,7 +207,7 @@ mod tests {
             // Create values of increasing size
             let value = vec![b'x'; i * 100];
             memory.put(&key, &value);
-            memory.try_freeze_current(1000); // Small freeze size to trigger frequent freezes
+            memory.freeze_current(1000); // Small freeze size to trigger frequent freezes
         }
 
         // Verify frozen memtable count
@@ -213,7 +217,8 @@ mod tests {
         );
 
         // print each frozen memtable size
-        for table in &memory.frozen {
+        let guard = Guard::new();
+        for table in memory.frozen.iter(&guard) {
             let size: usize = table
                 .map
                 .iter()
@@ -244,8 +249,8 @@ mod tests {
         let mut memory = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         };
 
         // Mix of puts, gets, and deletes
@@ -268,7 +273,7 @@ mod tests {
                 assert!(matches!(memory.get(&key).unwrap(), Record::Tomb));
             }
 
-            memory.try_freeze_current(1000);
+            memory.freeze_current(1000);
         }
 
         // Verify final state
@@ -291,8 +296,8 @@ mod tests {
         let mut memory = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         };
 
         // Test empty key/value
@@ -315,7 +320,7 @@ mod tests {
         );
 
         // Test delete after freeze
-        memory.try_freeze_current(100);
+        memory.freeze_current(100);
         memory.delete(b"large_key");
         assert!(matches!(memory.get(b"large_key").unwrap(), Record::Tomb));
     }
@@ -325,8 +330,8 @@ mod tests {
         let memory = Arc::new(LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         });
 
         const NUM_WRITERS: usize = 20;
@@ -407,8 +412,8 @@ mod tests {
         let mut memory = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
-            frozen_sizes: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         };
 
         // Test without freezing
@@ -443,7 +448,7 @@ mod tests {
             memory.put(&key, &value);
 
             // Try to freeze
-            memory.try_freeze_current(100); // Small size to encourage freezing
+            memory.freeze_current(100); // Small size to encourage freezing
 
             // Read after potential freeze
             let result = memory.get(&key);
@@ -483,7 +488,8 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed)
         );
         println!("Number of frozen memtables: {}", memory.frozen.len());
-        for (i, table) in memory.frozen.iter().enumerate() {
+        let guard = Guard::new();
+        for (i, table) in memory.frozen.iter(&guard).enumerate() {
             let size: usize = table
                 .map
                 .iter()
@@ -498,5 +504,33 @@ mod tests {
                 .sum();
             println!("Frozen memtable {} size: {}", i, size);
         }
+    }
+}
+
+#[cfg(test)]
+mod test_queue_iter_direction {
+    use super::*;
+
+    #[test]
+    fn test_queue_iter_direction() {
+        let queue = Queue::default();
+        queue.push(1);
+        queue.push(2);
+        queue.push(3);
+
+        let guard = Guard::new();
+        for i in queue.iter(&guard) {
+            print!("{}", i);
+        }
+
+        println!();
+
+        queue.pop();
+
+        let guard = Guard::new();
+        for i in queue.iter(&guard) {
+            print!("{}", i);
+        }
+        println!();
     }
 }

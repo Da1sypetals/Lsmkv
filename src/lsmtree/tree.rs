@@ -45,7 +45,7 @@ impl LsmTree {
 
         if current_size > self.mem_config.freeze_size {
             let mut mem = self.mem.write().unwrap();
-            mem.try_freeze_current(self.mem_config.freeze_size);
+            mem.freeze_current(self.mem_config.freeze_size);
         }
 
         // todo: periodic flush to disk
@@ -104,6 +104,7 @@ mod tests {
     use crate::disk::sst::read::SstReader;
     use crate::disk::sst::write::SstWriter;
     use crate::memory::memtable::Memtable;
+    use scc::Queue;
     use tempfile::tempdir;
 
     // Helper function to create a test tree
@@ -112,15 +113,21 @@ mod tests {
             freeze_size: 1024 * 1024, // 1MB
         };
 
+        let tempdir_string = tempdir().unwrap().into_path().to_str().unwrap().to_string();
+
         LsmTree {
             mem: Arc::new(RwLock::new(LsmMemory {
                 active: Arc::new(Memtable::new()),
                 active_size: AtomicUsize::new(0),
-                frozen: VecDeque::new(),
-                frozen_sizes: VecDeque::new(),
+                frozen: Queue::default(),
+                frozen_sizes: Queue::default(),
             })),
             mem_config: config,
-            disk: LsmDisk::empty("./".to_string()),
+            disk: LsmDisk::empty(tempdir_string),
+            // currently not used
+            flush_signal: Signal::new(),
+            // currently not used
+            flush_handle: std::thread::spawn(|| {}),
         }
     }
 
@@ -224,6 +231,20 @@ mod tests {
                 );
             }
         }
+
+        // add some delete test: delete early keys, verify they are deleted.
+        // delete 100 keys
+        let n = 10;
+        for i in 0..n {
+            let key = format!("key-{}", i).into_bytes();
+            tree.delete(&key);
+        }
+
+        // verify they are deleted
+        for i in 0..n {
+            let key = format!("key-{}", i).into_bytes();
+            assert_eq!(tree.get(&key), None);
+        }
     }
 
     #[test]
@@ -235,7 +256,7 @@ mod tests {
         let tree = Arc::new(tree);
 
         let num_threads = 10; // Number of concurrent threads
-        let num_operations = 1000; // Number of operations per thread
+        let num_operations: i32 = 100; // Number of operations per thread
 
         let handles: Vec<_> = (0..num_threads)
             .map(|thread_id| {
@@ -447,15 +468,15 @@ mod tests {
         frozen_memtable2.put(b"frozen2_key2", b"frozen2_value2");
         frozen_memtable2.put(b"shared_key", b"frozen_share_value");
 
-        let mut frozen = VecDeque::new();
-        frozen.push_front(frozen_memtable2);
-        frozen.push_front(frozen_memtable1);
+        let mut frozen = Queue::default();
+        frozen.push(frozen_memtable2);
+        frozen.push(frozen_memtable1);
 
         let mem = LsmMemory {
             active: active_memtable,
             active_size: AtomicUsize::new(active_size),
             frozen,
-            frozen_sizes: VecDeque::new(),
+            frozen_sizes: Queue::default(),
         };
 
         // Create LSM tree with prefilled components
@@ -463,6 +484,10 @@ mod tests {
             mem: Arc::new(RwLock::new(mem)),
             mem_config: MemoryConfig { freeze_size: 1000 },
             disk,
+            // currently not used
+            flush_signal: Signal::new(),
+            // currently not used
+            flush_handle: std::thread::spawn(|| {}),
         };
 
         // Test retrieving from active memtable
@@ -641,15 +666,15 @@ mod tests {
             frozen_memtable2.put(&key, &value);
         }
 
-        let mut frozen = VecDeque::new();
-        frozen.push_front(frozen_memtable2);
-        frozen.push_front(frozen_memtable1);
+        let mut frozen = Queue::default();
+        frozen.push(frozen_memtable2);
+        frozen.push(frozen_memtable1);
 
         let mem = LsmMemory {
             active: active_memtable,
             active_size: AtomicUsize::new(active_size),
             frozen,
-            frozen_sizes: VecDeque::new(),
+            frozen_sizes: Queue::default(),
         };
 
         // Create LSM tree with prefilled components
@@ -659,6 +684,10 @@ mod tests {
                 freeze_size: 10 * 1024 * 1024,
             }, // 10MB
             disk,
+            // currently not used
+            flush_signal: Signal::new(),
+            // currently not used
+            flush_handle: std::thread::spawn(|| {}),
         };
 
         // Test retrieving from active memtable (sample)

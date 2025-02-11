@@ -4,6 +4,8 @@
 
 
 # TODO
+0. fix tests: can read deleted entry
+
 1. Periodic flush
    1. flush signal
 2. Bloom Filter (or some advanced ones)

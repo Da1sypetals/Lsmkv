@@ -155,7 +155,7 @@ dependencies = [
  "log",
  "pretty_env_logger",
  "rand",
- "rcu_list",
+ "scc",
  "serde",
  "tempfile",
  "toml",
@@ -260,25 +260,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rcu_cell"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a51a8d6983fdaf55981d3002052f551c8580640c4dedc38c2f4dc29201ac7122"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "rcu_list"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40c712557fe1a69e3cc20137c28eacc692053c0d75f2101ea0e748fd540bcfbf"
-dependencies = [
- "crossbeam-utils",
- "rcu_cell",
-]
-
-[[package]]
 name = "regex"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -319,6 +300,21 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "scc"
+version = "2.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea091f6cac2595aa38993f04f4ee692ed43757035c36e67c180b6828356385b1"
+dependencies = [
+ "sdd",
+]
+
+[[package]]
+name = "sdd"
+version = "3.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b07779b9b918cc05650cb30f404d4d7835d26df37c235eded8a6832e2fb82cca"
 
 [[package]]
 name = "serde"

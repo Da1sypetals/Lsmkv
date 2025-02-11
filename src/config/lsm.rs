@@ -1,9 +1,10 @@
 use super::{memory::MemoryConfig, sst::SstConfig};
 use crate::{
     disk::disk::LsmDisk,
-    lsmtree::tree::LsmTree,
+    lsmtree::{signal::Signal, tree::LsmTree},
     memory::{memory::LsmMemory, memtable::Memtable},
 };
+use scc::Queue;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
@@ -22,13 +23,18 @@ impl LsmConfig {
         let mem = LsmMemory {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
-            frozen: VecDeque::new(),
+            frozen: Queue::default(),
+            frozen_sizes: Queue::default(),
         };
 
         LsmTree {
             mem: Arc::new(RwLock::new(mem)),
             mem_config: self.memory,
             disk: LsmDisk::empty(dir),
+            // currently not used
+            flush_signal: Signal::new(),
+            // currently not used
+            flush_handle: std::thread::spawn(|| {}),
         }
     }
 }

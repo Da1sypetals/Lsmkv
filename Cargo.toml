@@ -12,7 +12,7 @@ serde = { version = "1.0.217", features = ["derive"] }
 toml = "0.8.20"
 rand = "0.9.0"
 tempfile = "3.16.0"
-rcu_list = "0.1.1"
+scc = "2.3.3"
 
 [dev-dependencies]
 rand = "0.9.0"
