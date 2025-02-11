@@ -12,9 +12,9 @@ use std::{
 
 #[derive(Serialize, Deserialize)]
 pub struct LsmConfig {
-    path: String,
-    memory: MemoryConfig,
-    sst: SstConfig,
+    pub(crate) path: String,
+    pub(crate) memory: MemoryConfig,
+    pub(crate) sst: SstConfig,
 }
 
 impl LsmConfig {

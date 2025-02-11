@@ -11,7 +11,23 @@ pub struct LsmMemory {
     pub(crate) active_size: AtomicUsize,
 
     /// Newer ones have higher index.
+    ///     - SST flush should not hold the write lock of LsmMemory
+    ///     - thus vecdeque must support:
+    ///         1. concurrency
+    ///         2. .iter() (to support get operation)
     pub(crate) frozen: VecDeque<Arc<Memtable>>,
+    pub(crate) frozen_sizes: VecDeque<usize>,
+}
+
+impl LsmMemory {
+    pub fn empty() -> Self {
+        Self {
+            active: Arc::new(Memtable::new()),
+            active_size: AtomicUsize::new(0),
+            frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
+        }
+    }
 }
 
 impl LsmMemory {
@@ -56,6 +72,8 @@ impl LsmMemory {
         if current_size >= freeze_size {
             // really freeze
             self.frozen.push_front(self.active.clone()); // clone the arc
+            self.frozen_sizes.push_front(current_size);
+
             self.active = Arc::new(Memtable::new());
             self.active_size
                 .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -75,6 +93,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         };
 
         // Insert data that should cause multiple freezes
@@ -139,6 +158,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         });
         let mut handles = vec![];
 
@@ -174,6 +194,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         };
 
         // Insert data with varying sizes to trigger multiple freezes
@@ -224,6 +245,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         };
 
         // Mix of puts, gets, and deletes
@@ -270,6 +292,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         };
 
         // Test empty key/value
@@ -303,6 +326,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         });
 
         const NUM_WRITERS: usize = 20;
@@ -384,6 +408,7 @@ mod tests {
             active: Arc::new(Memtable::new()),
             active_size: AtomicUsize::new(0),
             frozen: VecDeque::new(),
+            frozen_sizes: VecDeque::new(),
         };
 
         // Test without freezing

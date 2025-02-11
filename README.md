@@ -4,6 +4,8 @@
 
 
 # TODO
-1. Read path
-2. Periodic flush
-3. Bloom Filter (or some advanced ones)
+1. Periodic flush
+   1. flush signal
+2. Bloom Filter (or some advanced ones)
+3. Compact
+   1. compact signal

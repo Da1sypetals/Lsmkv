@@ -155,6 +155,7 @@ dependencies = [
  "log",
  "pretty_env_logger",
  "rand",
+ "rcu_list",
  "serde",
  "tempfile",
  "toml",
@@ -256,6 +257,25 @@ checksum = "b08f3c9802962f7e1b25113931d94f43ed9725bebc59db9d0c3e9a23b67e15ff"
 dependencies = [
  "getrandom",
  "zerocopy 0.8.17",
+]
+
+[[package]]
+name = "rcu_cell"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a51a8d6983fdaf55981d3002052f551c8580640c4dedc38c2f4dc29201ac7122"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "rcu_list"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c712557fe1a69e3cc20137c28eacc692053c0d75f2101ea0e748fd540bcfbf"
+dependencies = [
+ "crossbeam-utils",
+ "rcu_cell",
 ]
 
 [[package]]

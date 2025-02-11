@@ -1,3 +1,4 @@
+use crate::config::lsm::LsmConfig;
 use crate::config::memory::MemoryConfig;
 use crate::config::sst::SstConfig;
 use crate::disk;
@@ -11,13 +12,26 @@ use bytes::Bytes;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::thread::JoinHandle;
 use tempfile::tempdir;
 
+use super::signal::Signal;
+
 pub struct LsmTree {
+    // ................................................................................
+    // ............................... Memory component ...............................
+    // ................................................................................
     pub(crate) mem: Arc<RwLock<LsmMemory>>,
     pub(crate) mem_config: MemoryConfig,
 
+    // ................................................................................
+    // ............................... Disk component .................................
+    // ................................................................................
     pub(crate) disk: LsmDisk,
+
+    // ................................. Flush ........................................
+    pub(crate) flush_signal: Signal,
+    pub(crate) flush_handle: JoinHandle<()>,
 }
 
 impl LsmTree {
@@ -61,6 +75,24 @@ impl LsmTree {
     }
 }
 
+impl LsmTree {
+    pub fn empty(config: LsmConfig) -> Self {
+        let flush_handle = std::thread::spawn(|| {});
+
+        Self {
+            mem: Arc::new(RwLock::new(LsmMemory::empty())),
+            mem_config: config.memory,
+            disk: LsmDisk::new(config.path),
+            flush_signal: Signal::new(),
+            flush_handle,
+        }
+    }
+
+    pub fn flush(&self) {
+        self.flush_signal.set();
+    }
+}
+
 // ........................................................................
 // ................................. test .................................
 // ........................................................................
@@ -85,6 +117,7 @@ mod tests {
                 active: Arc::new(Memtable::new()),
                 active_size: AtomicUsize::new(0),
                 frozen: VecDeque::new(),
+                frozen_sizes: VecDeque::new(),
             })),
             mem_config: config,
             disk: LsmDisk::empty("./".to_string()),
@@ -415,13 +448,14 @@ mod tests {
         frozen_memtable2.put(b"shared_key", b"frozen_share_value");
 
         let mut frozen = VecDeque::new();
-        frozen.push_back(frozen_memtable1);
-        frozen.push_back(frozen_memtable2);
+        frozen.push_front(frozen_memtable2);
+        frozen.push_front(frozen_memtable1);
 
         let mem = LsmMemory {
             active: active_memtable,
             active_size: AtomicUsize::new(active_size),
             frozen,
+            frozen_sizes: VecDeque::new(),
         };
 
         // Create LSM tree with prefilled components
@@ -608,13 +642,14 @@ mod tests {
         }
 
         let mut frozen = VecDeque::new();
-        frozen.push_back(frozen_memtable1);
-        frozen.push_back(frozen_memtable2);
+        frozen.push_front(frozen_memtable2);
+        frozen.push_front(frozen_memtable1);
 
         let mem = LsmMemory {
             active: active_memtable,
             active_size: AtomicUsize::new(active_size),
             frozen,
+            frozen_sizes: VecDeque::new(),
         };
 
         // Create LSM tree with prefilled components
