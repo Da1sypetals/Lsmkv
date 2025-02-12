@@ -324,187 +324,6 @@ fn test_concurrent_large_dataset() {
     );
 }
 
-// #[test]
-// fn test_deterministic_concurrent_operations() {
-//     use std::collections::HashMap;
-//     use std::sync::atomic::AtomicBool;
-//     use std::time::Instant;
-
-//     println!("\n=== Starting Deterministic Concurrent Test ===");
-
-//     // Create temporary directory for LSM tree
-//     let temp_dir = tempdir().unwrap();
-//     let dir_path = temp_dir.path().to_str().unwrap().to_string();
-
-//     println!("1. Configuring LSM Tree...");
-//     let config = LsmConfig {
-//         path: dir_path.clone(),
-//         memory: MemoryConfig {
-//             freeze_size: 1024 * 1024,    // 1MB - smaller for more frequent freezes
-//             flush_size: 4 * 1024 * 1024, // 4MB - trigger flush after multiple freezes
-//         },
-//         sst: SstConfig { block_size: 4096 },
-//     };
-
-//     let tree = Arc::new(LsmTree::empty(config));
-
-//     // Track the expected state
-//     let expected_state = Arc::new(RwLock::new(HashMap::new()));
-
-//     // Define deterministic workload parameters
-//     let n_writers = 4;
-//     let ops_per_writer = 10_000; // Smaller than random test for deterministic verification
-//     let total_ops = ops_per_writer * n_writers;
-
-//     println!(
-//         "2. Launching {} writer threads, {} ops each...",
-//         n_writers, ops_per_writer
-//     );
-
-//     // Spawn writer threads with deterministic patterns
-//     let mut write_handles = vec![];
-//     let start_time = Instant::now();
-
-//     for writer_id in 0..n_writers {
-//         let tree = Arc::clone(&tree);
-//         let expected_state = Arc::clone(&expected_state);
-
-//         let handle = thread::spawn(move || {
-//             let start = writer_id * ops_per_writer;
-//             let end = start + ops_per_writer;
-
-//             println!(
-//                 "   Writer {} starting operations {} to {}",
-//                 writer_id,
-//                 start,
-//                 end - 1
-//             );
-
-//             for i in start..end {
-//                 // Deterministic pattern:
-//                 // - Even numbers: insert
-//                 // - Every 10th: delete previous 3 entries
-//                 // - Every 100th: print progress
-
-//                 let key = format!("key{:010}", i).into_bytes();
-//                 let value = format!("value{:010}-writer-{}", i, writer_id).into_bytes();
-
-//                 if i % 100 == 0 {
-//                     println!("   Writer {} at operation {}", writer_id, i);
-//                 }
-
-//                 if i % 10 == 0 && i >= 3 {
-//                     // Delete previous 3 entries
-//                     for j in (i - 3)..i {
-//                         let del_key = format!("key{:010}", j).into_bytes();
-//                         tree.delete(&del_key);
-//                         expected_state.write().unwrap().remove(&del_key);
-//                     }
-//                 } else if i % 2 == 0 {
-//                     // Insert on even numbers
-//                     tree.put(&key, &value);
-//                     expected_state.write().unwrap().insert(key, value);
-//                 }
-//             }
-//             println!("   Writer {} completed", writer_id);
-//         });
-//         write_handles.push(handle);
-//     }
-
-//     // Wait for all writers to complete
-//     println!("3. Waiting for writers to complete...");
-//     for handle in write_handles {
-//         handle.join().unwrap();
-//     }
-//     let write_duration = start_time.elapsed();
-//     println!(
-//         "   All writers completed in {:.2} seconds",
-//         write_duration.as_secs_f64()
-//     );
-
-//     // Give some time for background compaction to settle
-//     println!("4. Allowing background operations to settle...");
-//     thread::sleep(Duration::from_millis(500));
-
-//     println!("5. Starting verification...");
-//     let verify_start = Instant::now();
-
-//     // Final state verification
-//     let mem = tree.mem.read().unwrap();
-//     println!("\nLSM Tree State:");
-//     println!("------------------------");
-//     println!("Memory:");
-//     println!("  Active size: {}", mem.active_size.load(Ordering::Relaxed));
-//     println!("  Frozen tables: {}", mem.frozen.len());
-//     println!("Disk levels:");
-//     println!("  Level 0: {}", tree.disk.level_0.read().unwrap().len());
-//     println!("  Level 1: {}", tree.disk.level_1.read().unwrap().len());
-//     println!("  Level 2: {}", tree.disk.level_2.read().unwrap().len());
-
-//     // Verify all expected entries
-//     let expected = expected_state.read().unwrap();
-//     println!("\nData Verification:");
-//     println!("------------------------");
-//     println!("Expected entries: {}", expected.len());
-
-//     let mut verified = 0;
-//     let mut errors = 0;
-//     let mut missing = 0;
-//     let mut mismatches = 0;
-
-//     for (key, expected_value) in expected.iter() {
-//         match tree.get(key) {
-//             Some(actual_value) => {
-//                 if actual_value == Bytes::from(expected_value.clone()) {
-//                     verified += 1;
-//                 } else {
-//                     mismatches += 1;
-//                     errors += 1;
-//                     println!("Value mismatch for key: {:?}", String::from_utf8_lossy(key));
-//                     println!("  Expected: {:?}", String::from_utf8_lossy(expected_value));
-//                     println!("  Got: {:?}", String::from_utf8_lossy(&actual_value));
-//                 }
-//             }
-//             None => {
-//                 missing += 1;
-//                 errors += 1;
-//                 println!("Missing key: {:?}", String::from_utf8_lossy(key));
-//             }
-//         }
-
-//         if (verified + errors) % 1000 == 0 {
-//             println!(
-//                 "Progress: {}/{} entries verified",
-//                 verified + errors,
-//                 expected.len()
-//             );
-//         }
-//     }
-
-//     let verify_duration = verify_start.elapsed();
-
-//     println!("\nVerification Results:");
-//     println!("------------------------");
-//     println!("Total entries: {}", expected.len());
-//     println!("Successfully verified: {}", verified);
-//     println!("Missing entries: {}", missing);
-//     println!("Value mismatches: {}", mismatches);
-//     println!("Total errors: {}", errors);
-//     println!(
-//         "Verification time: {:.2} seconds",
-//         verify_duration.as_secs_f64()
-//     );
-//     println!(
-//         "Total test time: {:.2} seconds",
-//         start_time.elapsed().as_secs_f64()
-//     );
-
-//     assert_eq!(errors, 0, "Found {} errors in verification", errors);
-//     assert!(verified > 0, "No entries were verified");
-
-//     println!("\n=== Deterministic Concurrent Test Completed Successfully ===");
-// }
-
 #[test]
 fn test_deterministic_concurrent_operations() {
     use std::collections::HashMap;
@@ -648,45 +467,10 @@ fn test_deterministic_concurrent_operations() {
     let mut missing = 0;
     let mut mismatches = 0;
 
-    // for (key, expected_value) in expected.iter() {
-    //     match tree.get(key) {
-    //         Some(actual_value) => {
-    //             if actual_value == &Bytes::from(expected_value.clone()) {
-    //                 verified += 1;
-    //             } else {
-    //                 mismatches += 1;
-    //                 errors += 1;
-    //                 println!("Value mismatch for key: {:?}", String::from_utf8_lossy(key));
-    //                 println!("  Expected: {:?}", String::from_utf8_lossy(expected_value));
-    //                 println!("  Got: {:?}", String::from_utf8_lossy(&actual_value));
-    //             }
-    //         }
-    //         None => {
-    //             missing += 1;
-    //             errors += 1;
-    //             println!("Missing key: {:?}", String::from_utf8_lossy(key));
-    //         }
-    //     }
-    //     if (verified + errors) % 10000 == 0 {
-    //         println!(
-    //             "Progress: {}/{} entries verified",
-    //             verified + errors,
-    //             expected.len()
-    //         );
-    //     }
-    // }
-
-    // randomly verify 10000 entries
-    let n_samples = 10000;
-    let mut rng = rand::rng();
-    let keys: Vec<_> = expected.keys().collect();
-    let sample_keys: Vec<_> = keys.choose_multiple(&mut rng, n_samples).collect();
-
-    for &key in sample_keys {
-        let expected_value = &expected[key];
+    for (key, expected_value) in expected.iter() {
         match tree.get(key) {
             Some(actual_value) => {
-                if actual_value == &Bytes::from(expected_value.clone()) {
+                if actual_value == Bytes::from(expected_value.clone()) {
                     verified += 1;
                 } else {
                     mismatches += 1;
@@ -730,4 +514,182 @@ fn test_deterministic_concurrent_operations() {
     assert!(verified > 0, "No entries were verified");
 
     println!("\n=== Deterministic Concurrent Test Completed Successfully ===");
+}
+
+#[test]
+fn test_concurrent_overwrite_delete() {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::time::Instant;
+
+    println!("\n=== Starting Concurrent Overwrite/Delete Test ===");
+
+    // Create temporary directory for LSM tree
+    let temp_dir = tempdir().unwrap();
+    let dir_path = temp_dir.path().to_str().unwrap().to_string();
+
+    println!("1. Configuring LSM Tree...");
+    let config = LsmConfig {
+        path: dir_path.clone(),
+        memory: MemoryConfig {
+            freeze_size: 1024,    // 1MB
+            flush_size: 4 * 1024, // 4MB
+        },
+        sst: SstConfig { block_size: 4096 },
+    };
+
+    let tree = Arc::new(LsmTree::empty(config));
+
+    // Track the final expected state for each key
+    let expected_state = Arc::new(RwLock::new(HashMap::new()));
+
+    // Define test parameters
+    let n_keys = 100; // Number of unique keys to operate on
+    let n_writers = 8; // Number of concurrent writers
+    let ops_per_writer = 10_000; // Operations per writer
+    let total_ops = ops_per_writer * n_writers;
+
+    println!(
+        "2. Launching {} writer threads, {} ops each on {} unique keys...",
+        n_writers, ops_per_writer, n_keys
+    );
+
+    // Spawn writer threads
+    let mut write_handles = vec![];
+    let start_time = Instant::now();
+
+    for writer_id in 0..n_writers {
+        let tree = Arc::clone(&tree);
+        let expected_state = Arc::clone(&expected_state);
+
+        let handle = thread::spawn(move || {
+            let mut rng = rand::rng();
+
+            for _ in 0..ops_per_writer {
+                // Pick a random key from the fixed set
+                let key_id = rng.random_range(0..n_keys);
+                let key = format!("key{:05}", key_id).into_bytes();
+
+                // 80% chance of put, 20% chance of delete
+                if rng.random_ratio(8, 10) {
+                    // Put operation with a unique value that identifies the writer and operation
+                    let timestamp = Instant::now().elapsed().as_nanos();
+                    let value =
+                        format!("value{}-w{}-t{}", key_id, writer_id, timestamp).into_bytes();
+
+                    tree.put(&key, &value);
+
+                    // Update expected state
+                    let mut state = expected_state.write().unwrap();
+                    state.insert(key.clone(), value.clone());
+                } else {
+                    // Delete operation
+                    tree.delete(&key);
+
+                    // Update expected state
+                    let mut state = expected_state.write().unwrap();
+                    state.remove(&key);
+                }
+
+                // Small sleep to allow interleaving
+                if rng.random_ratio(1, 100) {
+                    thread::sleep(Duration::from_micros(100));
+                }
+            }
+        });
+        write_handles.push(handle);
+    }
+
+    // Wait for all writers to complete
+    println!("3. Waiting for writers to complete...");
+    for handle in write_handles {
+        handle.join().unwrap();
+    }
+    let write_duration = start_time.elapsed();
+    println!(
+        "   All writers completed in {:.2} seconds",
+        write_duration.as_secs_f64()
+    );
+
+    // Allow time for background operations to settle
+    println!("4. Allowing background operations to settle...");
+    thread::sleep(Duration::from_millis(500));
+
+    println!("5. Starting verification...");
+    let verify_start = Instant::now();
+
+    // Print LSM Tree state
+    let mem = tree.mem.read().unwrap();
+    println!("\nLSM Tree State:");
+    println!("------------------------");
+    println!("Memory:");
+    println!("  Active size: {}", mem.active_size.load(Ordering::Relaxed));
+    println!("  Frozen tables: {}", mem.frozen.len());
+    println!("Disk levels:");
+    println!("  Level 0: {}", tree.disk.level_0.read().unwrap().len());
+    println!("  Level 1: {}", tree.disk.level_1.read().unwrap().len());
+    println!("  Level 2: {}", tree.disk.level_2.read().unwrap().len());
+
+    // Verify all keys against expected state
+    let expected = expected_state.read().unwrap();
+    println!("\nData Verification:");
+    println!("------------------------");
+    println!("Total unique keys: {}", n_keys);
+    println!("Keys in final state: {}", expected.len());
+
+    let mut verified = 0;
+    let mut errors = 0;
+
+    // Verify every possible key
+    for key_id in 0..n_keys {
+        let key = format!("key{:05}", key_id).into_bytes();
+        let tree_value = tree.get(&key);
+        let expected_value = expected.get(&key);
+
+        match (tree_value, expected_value) {
+            (Some(actual), Some(expected)) => {
+                if actual == Bytes::from(expected.clone()) {
+                    verified += 1;
+                } else {
+                    errors += 1;
+                    println!("Value mismatch for key{:05}:", key_id);
+                    println!("  Expected: {:?}", String::from_utf8_lossy(expected));
+                    println!("  Got: {:?}", String::from_utf8_lossy(&actual));
+                }
+            }
+            (None, None) => {
+                verified += 1; // Both agree key should not exist
+            }
+            (Some(actual), None) => {
+                errors += 1;
+                println!("Key{:05} exists but should be deleted:", key_id);
+                println!("  Got: {:?}", String::from_utf8_lossy(&actual));
+            }
+            (None, Some(expected)) => {
+                errors += 1;
+                println!("Key{:05} missing but should exist:", key_id);
+                println!("  Expected: {:?}", String::from_utf8_lossy(expected));
+            }
+        }
+    }
+
+    let verify_duration = verify_start.elapsed();
+
+    println!("\nVerification Results:");
+    println!("------------------------");
+    println!("Successfully verified: {}/{}", verified, n_keys);
+    println!("Errors: {}", errors);
+    println!(
+        "Verification time: {:.2} seconds",
+        verify_duration.as_secs_f64()
+    );
+    println!(
+        "Total test time: {:.2} seconds",
+        start_time.elapsed().as_secs_f64()
+    );
+
+    assert_eq!(errors, 0, "Found {} errors in verification", errors);
+    assert!(verified > 0, "No entries were verified");
+
+    println!("\n=== Concurrent Overwrite/Delete Test Completed Successfully ===");
 }

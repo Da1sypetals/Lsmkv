@@ -8,7 +8,10 @@ use scc::Queue;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
-    sync::{atomic::AtomicUsize, Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize},
+        Arc, RwLock,
+    },
 };
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -34,7 +37,8 @@ impl LsmConfig {
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
-            flush_handle: std::thread::spawn(|| {}),
+            flush_handle: None,
+            terminated: Arc::new(AtomicBool::new(false)),
         }
     }
 }

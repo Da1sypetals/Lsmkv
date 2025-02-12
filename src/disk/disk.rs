@@ -1,28 +1,26 @@
+use super::sst::read::SstReader;
+use crate::memory::record::Record;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, RwLock,
 };
 
-use crate::memory::record::Record;
-
-use super::sst::read::SstReader;
-
 pub struct LsmDisk {
     pub(crate) dir: String,
 
-    // Level 0
+    // Level 0, from oldest to newest
     pub(crate) level_0_counter: AtomicUsize,
     pub(crate) level_0: Arc<RwLock<Vec<SstReader>>>,
 
-    // Level 1
+    // Level 1, from oldest to newest
     pub(crate) level_1_counter: AtomicUsize,
     pub(crate) level_1: Arc<RwLock<Vec<SstReader>>>,
 
-    // Level 2
+    // Level 2, from newest to oldest
     pub(crate) level_2_counter: AtomicUsize,
     pub(crate) level_2: Arc<RwLock<Vec<SstReader>>>,
 
-    // Level 3
+    // Level 3, from newest to oldest
     pub(crate) level_3_counter: AtomicUsize,
     pub(crate) level_3: Arc<RwLock<Vec<SstReader>>>,
 }
@@ -50,7 +48,8 @@ impl LsmDisk {
     }
 
     pub fn new(dir: String) -> Self {
-        todo!("Initialize levels");
+        todo!("Properly initialize all readers and counters !");
+
         Self {
             dir,
             level_0: todo!(),
@@ -65,20 +64,14 @@ impl LsmDisk {
     }
 
     pub(crate) fn get_next_l0_relpath(&self) -> String {
-        let relpath = format!(
+        format!(
             // use 8 digits in rel path
             "level_0/sst_{:08}",
             self.level_0_counter.fetch_add(1, Ordering::Relaxed)
-        );
-
-        self.level_0.write().unwrap().push(SstReader {
-            dir: self.dir.clone(),
-            filename: relpath.clone(),
-        });
-        relpath
+        )
     }
 
-    pub(crate) fn add_l0_sst(&self, replath: String) {
+    pub(crate) fn add_l0_sst(&self, replath: &str) {
         assert!(
             replath.starts_with("level_0/"),
             "relpath must start with `level_0/`"
@@ -86,7 +79,7 @@ impl LsmDisk {
 
         self.level_0.write().unwrap().push(SstReader {
             dir: self.dir.clone(),
-            filename: replath.clone(),
+            filename: replath.to_string(),
         });
     }
 
@@ -117,28 +110,32 @@ impl LsmDisk {
 
 impl LsmDisk {
     pub fn get(&self, key: &[u8]) -> Option<Record> {
-        for sst in self.level_0.read().unwrap().iter() {
+        // Use .rev() to search from newest to oldest
+        for sst in self.level_0.read().unwrap().iter().rev() {
             let val = sst.get(key);
             if val.is_some() {
                 return val;
             }
         }
 
-        for sst in self.level_1.read().unwrap().iter() {
+        // Use .rev() to search from newest to oldest
+        for sst in self.level_1.read().unwrap().iter().rev() {
             let val = sst.get(key);
             if val.is_some() {
                 return val;
             }
         }
 
-        for sst in self.level_2.read().unwrap().iter() {
+        // Use .rev() to search from newest to oldest
+        for sst in self.level_2.read().unwrap().iter().rev() {
             let val = sst.get(key);
             if val.is_some() {
                 return val;
             }
         }
 
-        for sst in self.level_3.read().unwrap().iter() {
+        // Use .rev() to search from newest to oldest
+        for sst in self.level_3.read().unwrap().iter().rev() {
             let val = sst.get(key);
             if val.is_some() {
                 return val;

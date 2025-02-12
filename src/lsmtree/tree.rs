@@ -17,7 +17,7 @@ use scc::ebr::Guard;
 use scc::Queue;
 use std::collections::VecDeque;
 use std::os::unix::thread;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use tempfile::tempdir;
@@ -37,7 +37,24 @@ pub struct LsmTree {
 
     // ................................. Flush ........................................
     pub(crate) flush_signal: Arc<Signal>,
-    pub(crate) flush_handle: JoinHandle<()>,
+    pub(crate) flush_handle: Option<JoinHandle<()>>,
+    pub(crate) terminated: Arc<AtomicBool>,
+}
+
+impl Drop for LsmTree {
+    fn drop(&mut self) {
+        self.mem.write().unwrap().force_freeze_current();
+        // must be set before flushing
+        // otherwise, the flushing thread may not terminate
+        self.terminated.store(true, Ordering::Relaxed);
+        // flush
+        self.flush();
+
+        if let Some(handle) = self.flush_handle.take() {
+            handle.join().unwrap();
+        }
+        // else, there is no flushing thread, which is used in tests
+    }
 }
 
 impl LsmTree {
@@ -87,6 +104,8 @@ impl LsmTree {
 
 impl LsmTree {
     pub fn empty(config: LsmConfig) -> Self {
+        let terminated = Arc::new(AtomicBool::new(false));
+        let terminated_flusher = terminated.clone();
         let flush_signal = Arc::new(Signal::new());
         let flush_signal_flusher = flush_signal.clone();
 
@@ -114,23 +133,30 @@ impl LsmTree {
                     let sst = SstWriter::new(
                         config_flusher.sst.clone(),
                         config_flusher.path.clone(),
-                        relpath,
+                        relpath.clone(),
                         table,
                     );
 
                     sst.build();
 
+                    disk_flusher.add_l0_sst(&relpath);
+
                     mem.frozen.pop();
+                }
+
+                if terminated_flusher.load(Ordering::Relaxed) {
+                    break;
                 }
             }
         });
 
         let tree = Self {
+            terminated,
             mem,
             disk,
             config,
             flush_signal,
-            flush_handle,
+            flush_handle: Some(flush_handle),
         };
 
         tree
@@ -141,13 +167,6 @@ impl LsmTree {
     }
 
     pub fn persist(&mut self) {
-        self.mem.write().unwrap().force_freeze_current();
-        self.flush();
-    }
-}
-
-impl Drop for LsmTree {
-    fn drop(&mut self) {
         self.mem.write().unwrap().force_freeze_current();
         self.flush();
     }
@@ -177,6 +196,7 @@ mod tests {
         let tempdir_string = tempdir().unwrap().into_path().to_str().unwrap().to_string();
 
         LsmTree {
+            terminated: Arc::new(AtomicBool::new(false)),
             mem: Arc::new(RwLock::new(LsmMemory {
                 active: Arc::new(Memtable::new()),
                 active_size: AtomicUsize::new(0),
@@ -192,7 +212,7 @@ mod tests {
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
-            flush_handle: std::thread::spawn(|| {}),
+            flush_handle: None,
         }
     }
 
@@ -618,6 +638,7 @@ mod tests {
 
         // Create LSM tree with prefilled components
         let tree = LsmTree {
+            terminated: Arc::new(AtomicBool::new(false)),
             mem: Arc::new(RwLock::new(mem)),
             config: LsmConfig {
                 path: "./".to_string(),
@@ -631,7 +652,7 @@ mod tests {
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
-            flush_handle: std::thread::spawn(|| {}),
+            flush_handle: None,
         };
 
         // Test retrieving from active memtable
@@ -823,6 +844,7 @@ mod tests {
 
         // Create LSM tree with prefilled components
         let tree = LsmTree {
+            terminated: Arc::new(AtomicBool::new(false)),
             mem: Arc::new(RwLock::new(mem)),
             config: LsmConfig {
                 path: "./".to_string(),
@@ -836,7 +858,7 @@ mod tests {
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
-            flush_handle: std::thread::spawn(|| {}),
+            flush_handle: None,
         };
 
         // Test retrieving from active memtable (sample)
