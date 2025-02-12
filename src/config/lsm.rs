@@ -30,7 +30,7 @@ impl LsmConfig {
         LsmTree {
             mem: Arc::new(RwLock::new(mem)),
             config: self,
-            disk: LsmDisk::empty(dir),
+            disk: Arc::new(LsmDisk::empty(dir)),
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used

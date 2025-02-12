@@ -15,22 +15,23 @@ pub struct SstWriter {
     config: SstConfig,
     memtable: Arc<Memtable>,
     dir: String,
-    filename: String,
+    relpath: String,
 }
 
 impl SstWriter {
     #[must_use]
-    pub fn new(config: SstConfig, dir: String, filename: String, memtable: Arc<Memtable>) -> Self {
+    pub fn new(config: SstConfig, dir: String, relpath: String, memtable: Arc<Memtable>) -> Self {
         Self {
             config,
             memtable,
             dir,
-            filename,
+            relpath,
         }
     }
 
     pub fn build(self) {
-        let mut datafile = File::create(&format!("{}/{}.data", self.dir, self.filename)).unwrap();
+        // dbg!(&format!("{}/{}.data", self.dir, self.relpath));
+        let mut datafile = File::create(&format!("{}/{}.data", self.dir, self.relpath)).unwrap();
         datafile.seek(std::io::SeekFrom::Start(0)).unwrap();
 
         let mut index = Index::new();
@@ -65,7 +66,7 @@ impl SstWriter {
             index.push((memtable_last.key().clone(), last_key_offset));
         }
 
-        let indexfile = File::create(&format!("{}/{}.index", self.dir, self.filename)).unwrap();
+        let indexfile = File::create(&format!("{}/{}.index", self.dir, self.relpath)).unwrap();
         let mut index_writer = BufWriter::new(indexfile);
         for (key, datafile_offset) in index {
             let key_len = key.len() as u16;

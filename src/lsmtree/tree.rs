@@ -16,6 +16,7 @@ use rand::SeedableRng;
 use scc::ebr::Guard;
 use scc::Queue;
 use std::collections::VecDeque;
+use std::os::unix::thread;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
@@ -32,7 +33,7 @@ pub struct LsmTree {
     // ................................................................................
     // ............................... Disk component .................................
     // ................................................................................
-    pub(crate) disk: LsmDisk,
+    pub(crate) disk: Arc<LsmDisk>,
 
     // ................................. Flush ........................................
     pub(crate) flush_signal: Arc<Signal>,
@@ -54,7 +55,7 @@ impl LsmTree {
 
             let guard = Guard::new();
             if mem.frozen_sizes.iter(&guard).sum::<usize>() > self.config.memory.flush_size {
-                dbg!("Flush!");
+                // dbg!("Flush!");
                 self.flush();
             }
         }
@@ -92,7 +93,10 @@ impl LsmTree {
         let mem = Arc::new(RwLock::new(LsmMemory::empty()));
         let mem_flusher = mem.clone();
 
-        let config_clone = config.clone();
+        let disk = Arc::new(LsmDisk::empty(config.path.clone()));
+        let disk_flusher = disk.clone();
+
+        let config_flusher = config.clone();
 
         let flush_handle = std::thread::spawn(move || {
             //
@@ -101,16 +105,16 @@ impl LsmTree {
 
                 let mem = mem_flusher.read().unwrap();
                 while !mem.frozen.is_empty() {
-                    let filename = todo!();
+                    let relpath = disk_flusher.get_next_l0_relpath();
                     let guard = Guard::new();
 
                     // clone the arc, use fully qualified name
                     let table = Arc::clone(mem.frozen.peek(&guard).unwrap());
 
                     let sst = SstWriter::new(
-                        config_clone.sst,
-                        config_clone.path.clone(),
-                        filename,
+                        config_flusher.sst.clone(),
+                        config_flusher.path.clone(),
+                        relpath,
                         table,
                     );
 
@@ -123,7 +127,7 @@ impl LsmTree {
 
         let tree = Self {
             mem,
-            disk: LsmDisk::empty(config.path.clone()),
+            disk,
             config,
             flush_signal,
             flush_handle,
@@ -184,7 +188,7 @@ mod tests {
                 memory: config,
                 sst: SstConfig { block_size: 1000 },
             },
-            disk: LsmDisk::empty(tempdir_string),
+            disk: Arc::new(LsmDisk::empty(tempdir_string)),
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
@@ -539,7 +543,7 @@ mod tests {
             level0_memtable,
         );
         sst_writer.build();
-        disk.level_0.push(SstReader {
+        disk.level_0.write().unwrap().push(SstReader {
             dir: dir_path.clone(),
             filename: "sst1".to_string(),
         });
@@ -555,7 +559,7 @@ mod tests {
             level1_memtable,
         );
         sst_writer.build();
-        disk.level_1.push(SstReader {
+        disk.level_1.write().unwrap().push(SstReader {
             dir: dir_path.clone(),
             filename: "sst2".to_string(),
         });
@@ -572,7 +576,7 @@ mod tests {
             level2_memtable,
         );
         sst_writer.build();
-        disk.level_2.push(SstReader {
+        disk.level_2.write().unwrap().push(SstReader {
             dir: dir_path.clone(),
             filename: "sst3".to_string(),
         });
@@ -623,7 +627,7 @@ mod tests {
                 },
                 sst: SstConfig { block_size: 1000 },
             },
-            disk,
+            disk: Arc::new(disk),
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
@@ -719,7 +723,7 @@ mod tests {
             level0_memtable,
         );
         sst_writer.build();
-        disk.level_0.push(SstReader {
+        disk.level_0.write().unwrap().push(SstReader {
             dir: dir_path.clone(),
             filename: "sst1".to_string(),
         });
@@ -741,7 +745,7 @@ mod tests {
             level1_memtable,
         );
         sst_writer.build();
-        disk.level_1.push(SstReader {
+        disk.level_1.write().unwrap().push(SstReader {
             dir: dir_path.clone(),
             filename: "sst2".to_string(),
         });
@@ -763,7 +767,7 @@ mod tests {
             level2_memtable,
         );
         sst_writer.build();
-        disk.level_2.push(SstReader {
+        disk.level_2.write().unwrap().push(SstReader {
             dir: dir_path.clone(),
             filename: "sst3".to_string(),
         });
@@ -828,7 +832,7 @@ mod tests {
                 },
                 sst: SstConfig { block_size: 1000 },
             },
-            disk,
+            disk: Arc::new(disk),
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
