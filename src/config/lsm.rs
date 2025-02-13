@@ -34,7 +34,7 @@ impl LsmConfig {
         LsmTree {
             mem: Arc::new(RwLock::new(mem)),
             config: self.clone(),
-            disk: LsmDisk::empty(self),
+            disk: LsmDisk::empty(self, false),
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used

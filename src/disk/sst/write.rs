@@ -30,6 +30,8 @@ impl SstWriter {
     }
 
     pub fn build(self) {
+        
+
         // println!("Building SST file: {}/{}.data", self.dir, self.relpath);
         let mut datafile = File::create(&format!("{}/{}.data", self.dir, self.relpath)).unwrap();
         datafile.seek(std::io::SeekFrom::Start(0)).unwrap();

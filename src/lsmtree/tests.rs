@@ -54,6 +54,7 @@ fn test_data_distribution_across_layers() {
     let config = LsmConfig {
         dir: dir_path.clone(),
         disk: DiskConfig {
+            level_0_size_threshold: 65536,
             block_size_multiplier: 1,
             level_0_threshold: 1000000000000000,
             level_1_threshold: 1000000000000000,
@@ -94,8 +95,6 @@ fn test_data_distribution_across_layers() {
         "Active memtable should contain data"
     );
 
-    // Verify frozen memtables
-    let guard = Guard::new();
     // assert!(!mem.frozen.is_empty(), "Should have frozen memtables");
 
     // format these debugs into beautiful report of occupation of each level
@@ -167,6 +166,7 @@ fn test_concurrent_large_dataset() {
     let config = LsmConfig {
         dir: dir_path.clone(),
         disk: DiskConfig {
+            level_0_size_threshold: 65536,
             block_size_multiplier: 1,
             level_0_threshold: 1000000000000000,
             level_1_threshold: 1000000000000000,
@@ -353,6 +353,7 @@ fn test_deterministic_concurrent_operations() {
     let config = LsmConfig {
         dir: dir_path.clone(),
         disk: DiskConfig {
+            level_0_size_threshold: 65536,
             block_size_multiplier: 1,
             level_0_threshold: 1000000000000000,
             level_1_threshold: 1000000000000000,
@@ -545,6 +546,247 @@ fn test_deterministic_concurrent_operations() {
 }
 
 #[test]
+fn test_simple() {
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    println!("\n=== Starting Serial Insert Test ===");
+
+    // Create temporary directory for LSM tree
+    let temp_dir = tempdir().unwrap();
+    let dir_path = temp_dir.path().to_str().unwrap().to_string();
+
+    println!("1. Configuring LSM Tree...");
+    let config = LsmConfig {
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            level_0_size_threshold: 1024,
+            block_size_multiplier: 8,
+            level_0_threshold: 16,
+            level_1_threshold: 128,
+            level_2_threshold: 1024,
+        },
+        memory: MemoryConfig {
+            freeze_size: 1024,    // 1KB - smaller for more frequent freezes
+            flush_size: 4 * 1024, // 4KB
+        },
+        sst: SstConfig { block_size: 4096 },
+    };
+
+    let tree = LsmTree::empty(config);
+
+    // Track the expected state
+    let mut expected_state = HashMap::new();
+
+    // Define test parameters
+    let n_keys = 100_000;
+    println!("2. Starting serial insertion of {} keys...", n_keys);
+    let start_time = Instant::now();
+
+    // Insert keys sequentially
+    for i in 0..n_keys {
+        let key = format!("key{:05}", i).into_bytes();
+        let value = format!("value{:05}", i).into_bytes();
+
+        if i % 1000 == 0 {
+            println!("Progress: {}/{} keys inserted", i, n_keys);
+        }
+
+        tree.put(&key, &value);
+        expected_state.insert(key, value);
+
+        // Small sleep every 10k operations to allow background processes to work
+    }
+
+    // Print final LSM tree state
+    let mem = tree.mem.read().unwrap();
+    println!("\nFinal LSM Tree State:");
+    println!("------------------------");
+    println!("Memory:");
+    println!(
+        "  Active size: {}",
+        mem.active_size.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    println!("  Frozen tables: {}", mem.frozen.len());
+    println!("Disk levels:");
+    println!(
+        "  Level 0: {}",
+        tree.disk.level_0.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 1: {}",
+        tree.disk.level_1.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 2: {}",
+        tree.disk.level_2.read().unwrap().sst_readers.len()
+    );
+
+    let res = tree.get(b"key00000");
+    println!("res: {:?}", res);
+}
+
+#[test]
+fn test_serial_insert_versions() {
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    println!("\n=== Starting Serial Version Insert Test ===");
+
+    // Create temporary directory for LSM tree
+    let temp_dir = tempdir().unwrap();
+    let dir_path = temp_dir.path().to_str().unwrap().to_string();
+
+    println!("1. Configuring LSM Tree...");
+    let config = LsmConfig {
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            level_0_size_threshold: 65536,
+            block_size_multiplier: 4,
+            level_0_threshold: 16,
+            level_1_threshold: 16,
+            level_2_threshold: 16,
+        },
+        memory: MemoryConfig {
+            freeze_size: 1024,    // 1KB - smaller for more frequent freezes
+            flush_size: 4 * 1024, // 4KB
+        },
+        sst: SstConfig { block_size: 4096 },
+    };
+
+    let tree = LsmTree::empty(config);
+
+    // Define test parameters
+    let n_keys = 10000; // Small number of keys
+    let n_versions = 5; // Number of versions per key
+    println!(
+        "2. Starting serial insertion of {} keys with {} versions each...",
+        n_keys, n_versions
+    );
+    let start_time = Instant::now();
+
+    // Insert multiple versions for each key
+    for version in 0..n_versions {
+        for i in 0..n_keys {
+            let key = format!("key{:05}", i);
+            let value = format!("value{:05}_v{}", i, version);
+
+            if i % 1000 == 0 && version == 0 {
+                println!("Progress: {}/{} keys, version {}", i, n_keys, version);
+            }
+
+            tree.put(key.as_bytes(), value.as_bytes());
+        }
+        println!("Completed version {} insertion", version);
+        thread::sleep(Duration::from_millis(10)); // Allow some time between versions
+    }
+
+    let insert_duration = start_time.elapsed();
+    println!(
+        "\nInsertion completed in {:.2} seconds",
+        insert_duration.as_secs_f64()
+    );
+
+    // Allow time for any pending background operations
+    println!("\n3. Allowing background operations to settle...");
+    thread::sleep(Duration::from_millis(100));
+
+    // Print final LSM tree state
+    let mem = tree.mem.read().unwrap();
+    println!("\nFinal LSM Tree State:");
+    println!("------------------------");
+    println!("Memory:");
+    println!(
+        "  Active size: {}",
+        mem.active_size.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    println!("  Frozen tables: {}", mem.frozen.len());
+    println!("Disk levels:");
+    println!(
+        "  Level 0: {}",
+        tree.disk.level_0.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 1: {}",
+        tree.disk.level_1.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 2: {}",
+        tree.disk.level_2.read().unwrap().sst_readers.len()
+    );
+
+    // Verify all keys have their latest version
+    println!("\n4. Starting verification of latest versions...");
+    let verify_start = Instant::now();
+    let mut verified = 0;
+    let mut errors = 0;
+    let mut missing = 0;
+    let mut mismatches = 0;
+
+    for i in 0..n_keys {
+        let key = format!("key{:05}", i);
+        let expected_value = format!("value{:05}_v{}", i, n_versions - 1);
+        let key_bytes = key.as_bytes();
+        let expected_bytes = expected_value.as_bytes();
+
+        match tree.get(key_bytes) {
+            Some(actual_value) => {
+                if actual_value == Bytes::copy_from_slice(expected_bytes) {
+                    verified += 1;
+                } else {
+                    mismatches += 1;
+                    errors += 1;
+                    println!("Value mismatch for key: {}", key);
+                    println!("  Expected: {}", expected_value);
+                    println!("  Got: {:?}", String::from_utf8_lossy(&actual_value));
+                }
+            }
+            None => {
+                missing += 1;
+                errors += 1;
+                println!("Missing key: {}", key);
+            }
+        }
+
+        if (verified + errors) % 1000 == 0 {
+            println!(
+                "Progress: {}/{} entries verified",
+                verified + errors,
+                n_keys
+            );
+        }
+    }
+
+    let verify_duration = verify_start.elapsed();
+
+    println!("\nVerification Results:");
+    println!("------------------------");
+    println!("Total keys: {}", n_keys);
+    println!("Successfully verified latest versions: {}", verified);
+    println!("Missing entries: {}", missing);
+    println!("Value mismatches: {}", mismatches);
+    println!("Total errors: {}", errors);
+    println!(
+        "Verification time: {:.2} seconds",
+        verify_duration.as_secs_f64()
+    );
+    println!(
+        "Average verification rate: {:.2} ops/sec",
+        n_keys as f64 / verify_duration.as_secs_f64()
+    );
+    println!(
+        "Total test time: {:.2} seconds",
+        start_time.elapsed().as_secs_f64()
+    );
+
+    assert_eq!(errors, 0, "Found {} errors in verification", errors);
+    assert!(verified > 0, "No entries were verified");
+    assert_eq!(verified, n_keys, "Not all entries were verified");
+
+    println!("\n=== Serial Version Insert Test Completed Successfully ===");
+}
+
+#[test]
 fn test_concurrent_overwrite_delete() {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -560,10 +802,11 @@ fn test_concurrent_overwrite_delete() {
     let config = LsmConfig {
         dir: dir_path.clone(),
         disk: DiskConfig {
+            level_0_size_threshold: 65536,
             block_size_multiplier: 4,
-            level_0_threshold: 16, // Reduced to trigger compaction more frequently
-            level_1_threshold: 1000000000000000,
-            level_2_threshold: 1000000000000000,
+            level_0_threshold: 16,
+            level_1_threshold: 16,
+            level_2_threshold: 16,
         },
         memory: MemoryConfig {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
@@ -580,7 +823,7 @@ fn test_concurrent_overwrite_delete() {
     // Define test parameters - reduced for debugging
     let n_keys = 100; // Reduced number of unique keys
     let n_writers = 4; // Reduced number of writers
-    let ops_per_writer = 10_000; // Reduced operations per writer
+    let ops_per_writer = 10000; // Reduced operations per writer
     let total_ops = ops_per_writer * n_writers;
 
     println!(
@@ -595,6 +838,8 @@ fn test_concurrent_overwrite_delete() {
     for writer_id in 0..n_writers {
         let tree = Arc::clone(&tree);
         let expected_state = Arc::clone(&expected_state);
+
+        let time = Instant::now();
 
         let handle = thread::spawn(move || {
             let mut rng = rand::rng();
@@ -612,9 +857,9 @@ fn test_concurrent_overwrite_delete() {
                 // 80% chance of put, 20% chance of delete
                 if rng.random_ratio(8, 10) {
                     // Put operation with a unique value that identifies the writer and operation
-                    let timestamp = Instant::now().elapsed().as_nanos();
+                    let timestamp = time.elapsed().as_nanos();
                     let value =
-                        format!("value{}-w{}-t{}", key_id, writer_id, timestamp).into_bytes();
+                        format!("value{}-w{}-t[{}]", key_id, writer_id, timestamp).into_bytes();
 
                     // println!("Writer {} op {}: PUT key{:05}", writer_id, op_num, key_id);
                     tree.put(&key, &value);
@@ -707,7 +952,10 @@ fn test_concurrent_overwrite_delete() {
                     verified += 1;
                 } else {
                     errors += 1;
-                    println!("Value mismatch for key{:05}:", key_id);
+                    println!(
+                        "Value mismatch for key: {:?}",
+                        String::from_utf8_lossy(&key)
+                    );
                     println!("  Expected: {:?}", String::from_utf8_lossy(expected));
                     println!("  Got: {:?}", String::from_utf8_lossy(&actual));
                 }

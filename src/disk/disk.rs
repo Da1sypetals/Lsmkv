@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
+use scc::HashSet;
 
 use super::sst::read::SstReader;
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     memory::{memtable::Memtable, record::Record},
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{read, File},
     io::{BufReader, BufWriter, Read, Write},
     sync::{Arc, RwLock, RwLockWriteGuard},
@@ -83,7 +84,7 @@ impl LsmDisk {
     /// - The compact thread will wait on `compact_signal` and try compacting
     ///   L0 -> L1 when the number of sst files in L0 reaches
     ///   `config.disk.level_0_threshold`.
-    pub fn empty(config: LsmConfig) -> Arc<Self> {
+    pub fn empty(config: LsmConfig, auto_compact: bool) -> Arc<Self> {
         // create level subdirs if not exists
         std::fs::create_dir_all(format!("{}/level_0", config.dir)).unwrap();
         std::fs::create_dir_all(format!("{}/level_1", config.dir)).unwrap();
@@ -105,57 +106,63 @@ impl LsmDisk {
         // construct signal and compact thread
         let compact_signal_clone = disk.compact_signal.clone();
 
-        *disk.compact_handle.write().unwrap() = Some(std::thread::spawn(move || {
-            //
-            loop {
-                let status = compact_signal_clone.wait();
-                if status == SignalReturnStatus::Terminated {
-                    break;
-                }
+        if auto_compact {
+            *disk.compact_handle.write().unwrap() = Some(std::thread::spawn(move || {
+                //
+                loop {
+                    let status = compact_signal_clone.wait();
+                    if status == SignalReturnStatus::Terminated {
+                        break;
+                    }
 
-                let level_0_threshold = disk_clone.config.disk.level_0_threshold;
+                    let level_0_size_threshold = disk_clone.config.disk.level_0_size_threshold;
 
-                // try compact recursively
-                // level 0
-                if disk_clone.level_0.read().unwrap().sst_readers.len()
-                    > disk_clone.config.disk.level_0_threshold
-                {
-                    // println!("Start compact L0 -> L1 ...");
-                    disk_clone.compact(
-                        disk_clone.level_0.write().unwrap(),
-                        disk_clone.level_1.write().unwrap(),
-                        level_0_threshold,
-                    );
-
-                    let level_1_threshold =
-                        level_0_threshold * disk_clone.config.disk.block_size_multiplier;
-
-                    // level 1
-                    if disk_clone.level_1.read().unwrap().sst_readers.len()
-                        > disk_clone.config.disk.level_1_threshold
+                    // try compact recursively
+                    // level 0
+                    if disk_clone.level_0.read().unwrap().sst_readers.len()
+                        > disk_clone.config.disk.level_0_threshold
                     {
+                        println!("Start compact L0 -> L1 ...");
                         disk_clone.compact(
+                            disk_clone.level_0.write().unwrap(),
                             disk_clone.level_1.write().unwrap(),
-                            disk_clone.level_2.write().unwrap(),
-                            level_1_threshold,
+                            level_0_size_threshold,
                         );
 
-                        let level_2_threshold =
-                            level_1_threshold * disk_clone.config.disk.block_size_multiplier;
-                        // level 2
-                        if disk_clone.level_2.read().unwrap().sst_readers.len()
-                            > disk_clone.config.disk.level_2_threshold
+                        let level_1_size_threshold =
+                            level_0_size_threshold * disk_clone.config.disk.block_size_multiplier;
+
+                        // level 1
+                        if disk_clone.level_1.read().unwrap().sst_readers.len()
+                            > disk_clone.config.disk.level_1_threshold
                         {
+                            println!("Start compact L1 -> L2 ...");
                             disk_clone.compact(
+                                disk_clone.level_1.write().unwrap(),
                                 disk_clone.level_2.write().unwrap(),
-                                disk_clone.level_3.write().unwrap(),
-                                level_2_threshold,
+                                level_1_size_threshold,
                             );
+
+                            let level_2_size_threshold = level_1_size_threshold
+                                * disk_clone.config.disk.block_size_multiplier;
+
+                            // level 2
+                            if disk_clone.level_2.read().unwrap().sst_readers.len()
+                                > disk_clone.config.disk.level_2_threshold
+                            {
+                                disk_clone.compact(
+                                    disk_clone.level_2.write().unwrap(),
+                                    disk_clone.level_3.write().unwrap(),
+                                    level_2_size_threshold,
+                                );
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }));
+        } else {
+            println!("Auto compact is disabled");
+        }
 
         disk
     }
@@ -230,12 +237,13 @@ impl LsmDisk {
 impl LsmDisk {
     pub(crate) fn compact(
         self: &Arc<Self>,
-        from: RwLockWriteGuard<LevelInner>,
+        mut from: RwLockWriteGuard<LevelInner>,
         mut to: RwLockWriteGuard<LevelInner>,
         threshold: usize,
     ) {
         let mut approx_size = 0;
         let mut map: SkipMap<Bytes, Record> = SkipMap::new();
+        let mut keys: HashSet<Bytes> = HashSet::new();
 
         // Iterate files from latest to oldest:
         // 1. If the key does not exist in the map, insert key-record_size pair into the keys map;
@@ -244,6 +252,7 @@ impl LsmDisk {
         let files: Vec<_> = from
             .sst_readers
             .iter()
+            // iterate from newest to oldest
             .rev()
             .map(|sst| {
                 std::fs::OpenOptions::new()
@@ -260,73 +269,66 @@ impl LsmDisk {
             .map(|f| f.metadata().unwrap().len() as usize)
             .collect();
 
-        let mut cursors: Vec<_> = vec![0_usize; from.sst_readers.len()];
-        let mut keys = vec![vec![]; from.sst_readers.len()];
+        let mut approx_size = 0;
 
-        while !cursors
-            .iter()
-            .zip(sizes.iter())
-            .all(|(cursor, size)| *cursor >= *size as usize)
-        {
-            // debug print all cursor positions and its corresponding sizes
-            // for (i, (cursor, size)) in cursors.iter().zip(sizes.iter()).enumerate() {
-            //     println!("File: {}, cursor: {}, size: {}", i, cursor, size);
-            // }
-            // println!("");
+        // iterate from newest to oldest
+        for (reader, size) in readers.iter_mut().zip(sizes) {
+            let mut cursor = 0;
+            while cursor < size {
+                let kv = read_kv(reader);
+                let key = Bytes::copy_from_slice(&kv.key);
+                cursor += kv.size();
+                if keys.contains(&key) {
+                    // do nothing
+                } else {
+                    approx_size += kv.size();
+                    map.insert(key, kv.value);
+                }
 
-            // while not all files got to  its end {
-            // 1. move the latest file's cursor by 1 kv pair, insert into btreemap
-            // 2. from new to old (except the first one):
-            //    while ith-cursor-key < i-1th-cursor-key, advance 1 kv pair, if not in btreemap, insert it, else do nothing.
+                if approx_size > threshold {
+                    // build sst writer
+                    let relpath = to.get_filename();
 
-            if cursors[0] < sizes[0] {
-                let kv_0 = read_kv(&mut readers[0]);
-                approx_size += kv_0.size();
-                cursors[0] += kv_0.size();
-                keys[0] = kv_0.key.clone();
-                map.insert(Bytes::copy_from_slice(&kv_0.key), kv_0.value);
-            }
+                    let writer = SstWriter::new(
+                        self.config.sst.clone(),
+                        self.config.dir.clone(),
+                        relpath.clone(),
+                        Memtable { map }.into(),
+                    );
+                    writer.build();
 
-            for (i, reader) in readers.iter_mut().enumerate().skip(1) {
-                let mut kv;
-                // wtf is this syntax...
-                while cursors[i] < sizes[i] && {
-                    kv = read_kv(reader);
-                    reader.seek_relative(-(kv.size() as i64)).unwrap();
-                    kv.key <= keys[i - 1]
-                } {
-                    // dbg!(String::from_utf8_lossy(&kv.key));
-
-                    keys[i] = kv.key.clone();
-                    cursors[i] += kv.size();
-                    // if not exist, insert, else do not insert.
-                    map.get_or_insert_with(Bytes::copy_from_slice(&kv.key), || {
-                        // insertion operation
-                        approx_size += kv.size();
-
-                        kv.value
+                    to.sst_readers.push(SstReader {
+                        dir: self.config.dir.clone(),
+                        filename: relpath,
                     });
 
-                    if approx_size > threshold {
-                        let relpath = to.get_filename();
-                        // close previous sst file
-                        let writer = SstWriter::new(
-                            self.config.sst.clone(),
-                            self.config.dir.clone(),
-                            relpath.clone(),
-                            Memtable { map }.into(),
-                        );
-
-                        map = SkipMap::new();
-
-                        to.sst_readers.push(SstReader {
-                            dir: self.config.dir.clone(),
-                            filename: relpath,
-                        });
-                    }
+                    map = SkipMap::new();
                 }
             }
         }
+
+        // write tail to a new sst
+        if map.len() > 0 {
+            let relpath = to.get_filename();
+
+            let writer = SstWriter::new(
+                self.config.sst.clone(),
+                self.config.dir.clone(),
+                relpath.clone(),
+                Memtable { map }.into(),
+            );
+            writer.build();
+
+            to.sst_readers.push(SstReader {
+                dir: self.config.dir.clone(),
+                filename: relpath,
+            });
+        }
+
+        dbg!(from.sst_readers.len());
+        dbg!(to.sst_readers.len());
+
+        from.sst_readers.clear();
     }
 }
 
