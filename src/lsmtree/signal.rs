@@ -4,6 +4,13 @@ use std::sync::{Condvar, Mutex};
 pub enum SignalStatus {
     Ready,
     Waiting,
+    Terminated,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SignalReturnStatus {
+    Ready,
+    Terminated,
 }
 
 pub struct Signal {
@@ -19,19 +26,34 @@ impl Signal {
         }
     }
 
-    pub fn wait(&self) {
+    pub fn wait(&self) -> SignalReturnStatus {
         let mut status = *self.status.lock().unwrap();
         while let SignalStatus::Waiting = status {
             status = *self.condvar.wait(self.status.lock().unwrap()).unwrap();
         }
         // wait completed
 
+        // read the status, return, and reset the status to Waiting
+        let status = *self.status.lock().unwrap();
+
         *self.status.lock().unwrap() = SignalStatus::Waiting;
+
+        match status {
+            SignalStatus::Ready => SignalReturnStatus::Ready,
+            SignalStatus::Terminated => SignalReturnStatus::Terminated,
+            SignalStatus::Waiting => unreachable!(),
+        }
     }
 
     pub fn set(&self) {
         let mut status = self.status.lock().unwrap();
         *status = SignalStatus::Ready;
+        self.condvar.notify_all();
+    }
+
+    pub fn kill(&self) {
+        let mut status = self.status.lock().unwrap();
+        *status = SignalStatus::Terminated;
         self.condvar.notify_all();
     }
 }

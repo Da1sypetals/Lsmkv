@@ -30,7 +30,7 @@ impl SstWriter {
     }
 
     pub fn build(self) {
-        // dbg!(&format!("{}/{}.data", self.dir, self.relpath));
+        // println!("Building SST file: {}/{}.data", self.dir, self.relpath);
         let mut datafile = File::create(&format!("{}/{}.data", self.dir, self.relpath)).unwrap();
         datafile.seek(std::io::SeekFrom::Start(0)).unwrap();
 
@@ -45,12 +45,18 @@ impl SstWriter {
             if cur_block.len() == 0 {
                 // add to index
                 index.push((kv.key().clone(), offset));
+                // println!("Added index entry at offset {}: {:?}", offset, kv.key());
             }
 
             last_kv_size = cur_block.append(kv.key(), kv.value());
             offset += last_kv_size;
 
             if cur_block.size() > self.config.block_size as u64 {
+                // println!(
+                //     "Block size {} exceeded threshold {}, flushing",
+                //     cur_block.size(),
+                //     self.config.block_size
+                // );
                 // flush current block via drop
                 drop(cur_block);
 

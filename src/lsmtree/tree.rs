@@ -1,4 +1,4 @@
-use super::signal::Signal;
+use super::signal::{Signal, SignalReturnStatus};
 use crate::config::lsm::LsmConfig;
 use crate::config::memory::MemoryConfig;
 use crate::config::sst::SstConfig;
@@ -38,7 +38,6 @@ pub struct LsmTree {
     // ................................. Flush ........................................
     pub(crate) flush_signal: Arc<Signal>,
     pub(crate) flush_handle: Option<JoinHandle<()>>,
-    pub(crate) terminated: Arc<AtomicBool>,
 }
 
 impl Drop for LsmTree {
@@ -46,9 +45,8 @@ impl Drop for LsmTree {
         self.mem.write().unwrap().force_freeze_current();
         // must be set before flushing
         // otherwise, the flushing thread may not terminate
-        self.terminated.store(true, Ordering::Relaxed);
-        // flush
-        self.flush();
+        self.flush_signal.kill();
+        self.disk.compact_signal.kill();
 
         if let Some(handle) = self.flush_handle.take() {
             handle.join().unwrap();
@@ -104,15 +102,13 @@ impl LsmTree {
 
 impl LsmTree {
     pub fn empty(config: LsmConfig) -> Self {
-        let terminated = Arc::new(AtomicBool::new(false));
-        let terminated_flusher = terminated.clone();
         let flush_signal = Arc::new(Signal::new());
         let flush_signal_flusher = flush_signal.clone();
 
         let mem = Arc::new(RwLock::new(LsmMemory::empty()));
         let mem_flusher = mem.clone();
 
-        let disk = Arc::new(LsmDisk::empty(config.path.clone()));
+        let disk = LsmDisk::empty(config.clone());
         let disk_flusher = disk.clone();
 
         let config_flusher = config.clone();
@@ -120,11 +116,14 @@ impl LsmTree {
         let flush_handle = std::thread::spawn(move || {
             //
             loop {
-                flush_signal_flusher.wait();
+                let status = flush_signal_flusher.wait();
+                if status == SignalReturnStatus::Terminated {
+                    break;
+                }
 
                 let mem = mem_flusher.read().unwrap();
                 while !mem.frozen.is_empty() {
-                    let relpath = disk_flusher.get_next_l0_relpath();
+                    let relpath = disk_flusher.level_0.write().unwrap().get_filename();
                     let guard = Guard::new();
 
                     // clone the arc, use fully qualified name
@@ -132,7 +131,7 @@ impl LsmTree {
 
                     let sst = SstWriter::new(
                         config_flusher.sst.clone(),
-                        config_flusher.path.clone(),
+                        config_flusher.dir.clone(),
                         relpath.clone(),
                         table,
                     );
@@ -143,15 +142,10 @@ impl LsmTree {
 
                     mem.frozen.pop();
                 }
-
-                if terminated_flusher.load(Ordering::Relaxed) {
-                    break;
-                }
             }
         });
 
         let tree = Self {
-            terminated,
             mem,
             disk,
             config,
@@ -179,6 +173,7 @@ impl LsmTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::disk::DiskConfig;
     use crate::config::sst::SstConfig;
     use crate::disk::sst::read::SstReader;
     use crate::disk::sst::write::SstWriter;
@@ -195,20 +190,28 @@ mod tests {
 
         let tempdir_string = tempdir().unwrap().into_path().to_str().unwrap().to_string();
 
+        let config = LsmConfig {
+            dir: tempdir_string,
+            // currently not used
+            disk: DiskConfig {
+                block_size_multiplier: 1,
+                level_0_threshold: 1,
+                level_1_threshold: 1,
+                level_2_threshold: 1,
+            },
+            memory: config,
+            sst: SstConfig { block_size: 1000 },
+        };
+
         LsmTree {
-            terminated: Arc::new(AtomicBool::new(false)),
             mem: Arc::new(RwLock::new(LsmMemory {
                 active: Arc::new(Memtable::new()),
                 active_size: AtomicUsize::new(0),
                 frozen: Queue::default(),
                 frozen_sizes: Queue::default(),
             })),
-            config: LsmConfig {
-                path: "./".to_string(),
-                memory: config,
-                sst: SstConfig { block_size: 1000 },
-            },
-            disk: Arc::new(LsmDisk::empty(tempdir_string)),
+            disk: LsmDisk::empty(config.clone()),
+            config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
@@ -549,8 +552,26 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap().to_string();
+        let config = LsmConfig {
+            dir,
+            // currently not used
+            disk: DiskConfig {
+                block_size_multiplier: 1,
+                level_0_threshold: 1,
+                level_1_threshold: 1,
+                level_2_threshold: 1,
+            },
+            memory: MemoryConfig {
+                freeze_size: 1000,
+                flush_size: 1000, // unused
+            },
+            sst: SstConfig { block_size: 1000 },
+        };
+
         // Create disk component
-        let mut disk = LsmDisk::empty(dir_path.clone());
+        let mut disk = LsmDisk::empty(config);
 
         // Level 0 SST
         let level0_memtable = Arc::new(Memtable::new());
@@ -563,7 +584,7 @@ mod tests {
             level0_memtable,
         );
         sst_writer.build();
-        disk.level_0.write().unwrap().push(SstReader {
+        disk.level_0.write().unwrap().sst_readers.push(SstReader {
             dir: dir_path.clone(),
             filename: "sst1".to_string(),
         });
@@ -579,7 +600,7 @@ mod tests {
             level1_memtable,
         );
         sst_writer.build();
-        disk.level_1.write().unwrap().push(SstReader {
+        disk.level_1.write().unwrap().sst_readers.push(SstReader {
             dir: dir_path.clone(),
             filename: "sst2".to_string(),
         });
@@ -596,7 +617,7 @@ mod tests {
             level2_memtable,
         );
         sst_writer.build();
-        disk.level_2.write().unwrap().push(SstReader {
+        disk.level_2.write().unwrap().sst_readers.push(SstReader {
             dir: dir_path.clone(),
             filename: "sst3".to_string(),
         });
@@ -636,19 +657,29 @@ mod tests {
             frozen_sizes: Queue::default(),
         };
 
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap().to_string();
+
+        let config = LsmConfig {
+            dir,
+            // currently not used
+            disk: DiskConfig {
+                block_size_multiplier: 1,
+                level_0_threshold: 1,
+                level_1_threshold: 1,
+                level_2_threshold: 1,
+            },
+            memory: MemoryConfig {
+                freeze_size: 1000,
+                flush_size: 1000, // unused
+            },
+            sst: SstConfig { block_size: 1000 },
+        };
         // Create LSM tree with prefilled components
         let tree = LsmTree {
-            terminated: Arc::new(AtomicBool::new(false)),
             mem: Arc::new(RwLock::new(mem)),
-            config: LsmConfig {
-                path: "./".to_string(),
-                memory: MemoryConfig {
-                    freeze_size: 1000,
-                    flush_size: 1000, // unused
-                },
-                sst: SstConfig { block_size: 1000 },
-            },
-            disk: Arc::new(disk),
+            disk,
+            config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
@@ -723,8 +754,23 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
+        let config = LsmConfig {
+            dir: dir_path.clone(),
+            // currently not used
+            disk: DiskConfig {
+                block_size_multiplier: 1,
+                level_0_threshold: 1,
+                level_1_threshold: 1,
+                level_2_threshold: 1,
+            },
+            memory: MemoryConfig {
+                freeze_size: 10 * 1024 * 1024,
+                flush_size: 10 * 1024 * 1024, // unused
+            },
+            sst: SstConfig { block_size: 1000 },
+        };
         // Create disk component
-        let mut disk = LsmDisk::empty(dir_path.clone());
+        let mut disk = LsmDisk::empty(config);
 
         // Level 0 SST - 10,000 entries
         let level0_memtable = Arc::new(Memtable::new());
@@ -744,7 +790,7 @@ mod tests {
             level0_memtable,
         );
         sst_writer.build();
-        disk.level_0.write().unwrap().push(SstReader {
+        disk.level_0.write().unwrap().sst_readers.push(SstReader {
             dir: dir_path.clone(),
             filename: "sst1".to_string(),
         });
@@ -766,7 +812,7 @@ mod tests {
             level1_memtable,
         );
         sst_writer.build();
-        disk.level_1.write().unwrap().push(SstReader {
+        disk.level_1.write().unwrap().sst_readers.push(SstReader {
             dir: dir_path.clone(),
             filename: "sst2".to_string(),
         });
@@ -788,7 +834,7 @@ mod tests {
             level2_memtable,
         );
         sst_writer.build();
-        disk.level_2.write().unwrap().push(SstReader {
+        disk.level_2.write().unwrap().sst_readers.push(SstReader {
             dir: dir_path.clone(),
             filename: "sst3".to_string(),
         });
@@ -842,19 +888,30 @@ mod tests {
             frozen_sizes: Queue::default(),
         };
 
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap().to_string();
+
+        let config = LsmConfig {
+            dir,
+            // currently not used
+            disk: DiskConfig {
+                block_size_multiplier: 1,
+                level_0_threshold: 1000000000000000000,
+                level_1_threshold: 1000000000000000000,
+                level_2_threshold: 1000000000000000000,
+            },
+            memory: MemoryConfig {
+                freeze_size: 10 * 1024 * 1024,
+                flush_size: 10 * 1024 * 1024, // unused
+            },
+            sst: SstConfig { block_size: 1000 },
+        };
+
         // Create LSM tree with prefilled components
         let tree = LsmTree {
-            terminated: Arc::new(AtomicBool::new(false)),
             mem: Arc::new(RwLock::new(mem)),
-            config: LsmConfig {
-                path: "./".to_string(),
-                memory: MemoryConfig {
-                    freeze_size: 10 * 1024 * 1024,
-                    flush_size: 10 * 1024 * 1024, // unused
-                },
-                sst: SstConfig { block_size: 1000 },
-            },
-            disk: Arc::new(disk),
+            disk,
+            config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used

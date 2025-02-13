@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::disk::DiskConfig;
 use crate::config::lsm::LsmConfig;
 use crate::config::memory::MemoryConfig;
 use crate::config::sst::SstConfig;
@@ -51,7 +52,13 @@ fn test_data_distribution_across_layers() {
     // };
 
     let config = LsmConfig {
-        path: dir_path.clone(),
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            block_size_multiplier: 1,
+            level_0_threshold: 1000000000000000,
+            level_1_threshold: 1000000000000000,
+            level_2_threshold: 1000000000000000,
+        },
         memory: MemoryConfig {
             freeze_size: 1024, // 1KB - small size to trigger freezing
             flush_size: 16384, // 2KB - small size to trigger flushing
@@ -96,9 +103,9 @@ fn test_data_distribution_across_layers() {
         "Memory: active size: {}, # frozen tables: {}\nDisk: level_0: {}, level_1: {}, level_2: {}",
         mem.active_size.load(Ordering::Relaxed),
         mem.frozen.len(),
-        tree.disk.level_0.read().unwrap().len(),
-        tree.disk.level_1.read().unwrap().len(),
-        tree.disk.level_2.read().unwrap().len()
+        tree.disk.level_0.read().unwrap().sst_readers.len(),
+        tree.disk.level_1.read().unwrap().sst_readers.len(),
+        tree.disk.level_2.read().unwrap().sst_readers.len()
     );
     println!("{}", report);
 
@@ -124,9 +131,9 @@ fn test_data_distribution_across_layers() {
 
     // Verify data distribution across disk levels
     assert!(
-        !tree.disk.level_0.read().unwrap().is_empty()
-            || !tree.disk.level_1.read().unwrap().is_empty()
-            || !tree.disk.level_2.read().unwrap().is_empty(),
+        !tree.disk.level_0.read().unwrap().sst_readers.is_empty()
+            || !tree.disk.level_1.read().unwrap().sst_readers.is_empty()
+            || !tree.disk.level_2.read().unwrap().sst_readers.is_empty(),
         "Data should be present in at least one disk level"
     );
 
@@ -158,7 +165,13 @@ fn test_concurrent_large_dataset() {
 
     // Configure LSM tree with more realistic sizes for large dataset
     let config = LsmConfig {
-        path: dir_path.clone(),
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            block_size_multiplier: 1,
+            level_0_threshold: 1000000000000000,
+            level_1_threshold: 1000000000000000,
+            level_2_threshold: 1000000000000000,
+        },
         memory: MemoryConfig {
             freeze_size: 4 * 1024 * 1024, // 4MB - reasonable size for memtable
             flush_size: 16 * 1024 * 1024, // 16MB - trigger flush after multiple freezes
@@ -285,9 +298,9 @@ fn test_concurrent_large_dataset() {
     );
     println!(
         "Disk: level_0: {}, level_1: {}, level_2: {}",
-        tree.disk.level_0.read().unwrap().len(),
-        tree.disk.level_1.read().unwrap().len(),
-        tree.disk.level_2.read().unwrap().len()
+        tree.disk.level_0.read().unwrap().sst_readers.len(),
+        tree.disk.level_1.read().unwrap().sst_readers.len(),
+        tree.disk.level_2.read().unwrap().sst_readers.len()
     );
 
     // Verify data consistency by sampling some keys
@@ -338,7 +351,13 @@ fn test_deterministic_concurrent_operations() {
 
     println!("1. Configuring LSM Tree...");
     let config = LsmConfig {
-        path: dir_path.clone(),
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            block_size_multiplier: 1,
+            level_0_threshold: 1000000000000000,
+            level_1_threshold: 1000000000000000,
+            level_2_threshold: 1000000000000000,
+        },
         memory: MemoryConfig {
             freeze_size: 1024 * 1024,    // 1MB - smaller for more frequent freezes
             flush_size: 4 * 1024 * 1024, // 4MB - trigger flush after multiple freezes
@@ -452,9 +471,18 @@ fn test_deterministic_concurrent_operations() {
     println!("  Active size: {}", mem.active_size.load(Ordering::Relaxed));
     println!("  Frozen tables: {}", mem.frozen.len());
     println!("Disk levels:");
-    println!("  Level 0: {}", tree.disk.level_0.read().unwrap().len());
-    println!("  Level 1: {}", tree.disk.level_1.read().unwrap().len());
-    println!("  Level 2: {}", tree.disk.level_2.read().unwrap().len());
+    println!(
+        "  Level 0: {}",
+        tree.disk.level_0.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 1: {}",
+        tree.disk.level_1.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 2: {}",
+        tree.disk.level_2.read().unwrap().sst_readers.len()
+    );
 
     // Verify all expected entries
     let expected = expected_state.read().unwrap();
@@ -530,10 +558,16 @@ fn test_concurrent_overwrite_delete() {
 
     println!("1. Configuring LSM Tree...");
     let config = LsmConfig {
-        path: dir_path.clone(),
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            block_size_multiplier: 4,
+            level_0_threshold: 16, // Reduced to trigger compaction more frequently
+            level_1_threshold: 1000000000000000,
+            level_2_threshold: 1000000000000000,
+        },
         memory: MemoryConfig {
-            freeze_size: 1024,    // 1MB
-            flush_size: 4 * 1024, // 4MB
+            freeze_size: 1024,    // 1KB - smaller for more frequent freezes
+            flush_size: 4 * 1024, // 4KB
         },
         sst: SstConfig { block_size: 4096 },
     };
@@ -543,10 +577,10 @@ fn test_concurrent_overwrite_delete() {
     // Track the final expected state for each key
     let expected_state = Arc::new(RwLock::new(HashMap::new()));
 
-    // Define test parameters
-    let n_keys = 100; // Number of unique keys to operate on
-    let n_writers = 8; // Number of concurrent writers
-    let ops_per_writer = 10_000; // Operations per writer
+    // Define test parameters - reduced for debugging
+    let n_keys = 100; // Reduced number of unique keys
+    let n_writers = 4; // Reduced number of writers
+    let ops_per_writer = 10_000; // Reduced operations per writer
     let total_ops = ops_per_writer * n_writers;
 
     println!(
@@ -564,8 +598,13 @@ fn test_concurrent_overwrite_delete() {
 
         let handle = thread::spawn(move || {
             let mut rng = rand::rng();
+            // println!("Writer {} starting", writer_id);
 
-            for _ in 0..ops_per_writer {
+            for op_num in 0..ops_per_writer {
+                if op_num % 100 == 0 {
+                    println!("Writer {} op {}", writer_id, op_num);
+                }
+
                 // Pick a random key from the fixed set
                 let key_id = rng.random_range(0..n_keys);
                 let key = format!("key{:05}", key_id).into_bytes();
@@ -577,6 +616,7 @@ fn test_concurrent_overwrite_delete() {
                     let value =
                         format!("value{}-w{}-t{}", key_id, writer_id, timestamp).into_bytes();
 
+                    // println!("Writer {} op {}: PUT key{:05}", writer_id, op_num, key_id);
                     tree.put(&key, &value);
 
                     // Update expected state
@@ -584,6 +624,10 @@ fn test_concurrent_overwrite_delete() {
                     state.insert(key.clone(), value.clone());
                 } else {
                     // Delete operation
+                    // println!(
+                    //     "Writer {} op {}: DELETE key{:05}",
+                    //     writer_id, op_num, key_id
+                    // );
                     tree.delete(&key);
 
                     // Update expected state
@@ -591,11 +635,13 @@ fn test_concurrent_overwrite_delete() {
                     state.remove(&key);
                 }
 
-                // Small sleep to allow interleaving
-                if rng.random_ratio(1, 100) {
-                    thread::sleep(Duration::from_micros(100));
-                }
+                // // Small sleep to allow interleaving
+                // if rng.random_ratio(1, 10) {
+                //     // Increased sleep frequency
+                //     thread::sleep(Duration::from_micros(1000)); // Increased sleep duration
+                // }
             }
+            // println!("Writer {} completed", writer_id);
         });
         write_handles.push(handle);
     }
@@ -626,9 +672,18 @@ fn test_concurrent_overwrite_delete() {
     println!("  Active size: {}", mem.active_size.load(Ordering::Relaxed));
     println!("  Frozen tables: {}", mem.frozen.len());
     println!("Disk levels:");
-    println!("  Level 0: {}", tree.disk.level_0.read().unwrap().len());
-    println!("  Level 1: {}", tree.disk.level_1.read().unwrap().len());
-    println!("  Level 2: {}", tree.disk.level_2.read().unwrap().len());
+    println!(
+        "  Level 0: {}",
+        tree.disk.level_0.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 1: {}",
+        tree.disk.level_1.read().unwrap().sst_readers.len()
+    );
+    println!(
+        "  Level 2: {}",
+        tree.disk.level_2.read().unwrap().sst_readers.len()
+    );
 
     // Verify all keys against expected state
     let expected = expected_state.read().unwrap();

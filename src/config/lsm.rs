@@ -1,4 +1,4 @@
-use super::{memory::MemoryConfig, sst::SstConfig};
+use super::{disk::DiskConfig, memory::MemoryConfig, sst::SstConfig};
 use crate::{
     disk::disk::LsmDisk,
     lsmtree::{signal::Signal, tree::LsmTree},
@@ -16,9 +16,10 @@ use std::{
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LsmConfig {
-    pub(crate) path: String,
+    pub(crate) dir: String,
     pub(crate) memory: MemoryConfig,
     pub(crate) sst: SstConfig,
+    pub(crate) disk: DiskConfig,
 }
 
 impl LsmConfig {
@@ -32,13 +33,12 @@ impl LsmConfig {
 
         LsmTree {
             mem: Arc::new(RwLock::new(mem)),
-            config: self,
-            disk: Arc::new(LsmDisk::empty(dir)),
+            config: self.clone(),
+            disk: LsmDisk::empty(self),
             // currently not used
             flush_signal: Arc::new(Signal::new()),
             // currently not used
             flush_handle: None,
-            terminated: Arc::new(AtomicBool::new(false)),
         }
     }
 }

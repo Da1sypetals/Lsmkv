@@ -36,6 +36,12 @@ pub struct SstReader {
 }
 
 impl SstReader {
+    pub fn sst_path(&self) -> String {
+        format!("{}/{}.data", self.dir, self.filename)
+    }
+}
+
+impl SstReader {
     /// Returns:
     ///  - None if the key is not found
     ///  - Some(Value) if the key is found
