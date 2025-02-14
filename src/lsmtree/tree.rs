@@ -9,6 +9,7 @@ use crate::disk::sst::write::SstWriter;
 use crate::memory::memory::LsmMemory;
 use crate::memory::memtable::Memtable;
 use crate::memory::record::Record;
+use crate::wal::wal::Wal;
 use bytes::Bytes;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -34,6 +35,11 @@ pub struct LsmTree {
     // ............................... Disk component .................................
     // ................................................................................
     pub(crate) disk: Arc<LsmDisk>,
+
+    // ................................................................................
+    // ................................... Logging ....................................
+    // ................................................................................
+    pub(crate) wal: Arc<RwLock<Wal>>,
 
     // ................................. Flush ........................................
     pub(crate) flush_signal: Arc<Signal>,
@@ -61,12 +67,18 @@ impl LsmTree {
             let mem = self.mem.read().unwrap();
             mem.put(key, value);
 
+            // wal: write to Wal log
+            self.wal.write().unwrap().append_current(key, value);
+
             mem.active_size.load(std::sync::atomic::Ordering::Relaxed)
         };
 
         if current_size > self.config.memory.freeze_size {
             let mut mem = self.mem.write().unwrap();
             mem.try_freeze_current(self.config.memory.freeze_size);
+
+            // wal: freeze wal file
+            self.wal.write().unwrap().freeze_current();
 
             let guard = Guard::new();
             if mem.frozen_sizes.iter(&guard).sum::<usize>() > self.config.memory.flush_size {
@@ -111,6 +123,8 @@ impl LsmTree {
         let disk = LsmDisk::empty(config.clone());
         let disk_flusher = disk.clone();
 
+        let wal = Arc::new(RwLock::new(Wal::empty(config.dir.clone())));
+        let wal_flusher = wal.clone();
         let config_flusher = config.clone();
 
         let flush_handle = std::thread::spawn(move || {
@@ -141,6 +155,9 @@ impl LsmTree {
                     disk_flusher.add_l0_sst(&relpath);
 
                     mem.frozen.pop();
+
+                    // wal: remove last wal file and its handle
+                    wal_flusher.write().unwrap().pop_oldest();
                 }
             }
         });
@@ -151,6 +168,7 @@ impl LsmTree {
             config,
             flush_signal,
             flush_handle: Some(flush_handle),
+            wal,
         };
 
         tree
@@ -217,6 +235,7 @@ mod tests {
                 frozen_sizes: Queue::default(),
             })),
             disk: LsmDisk::empty(config.clone()),
+            wal: Arc::new(RwLock::new(Wal::empty(config.dir.clone()))),
             config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),
@@ -709,6 +728,7 @@ mod tests {
         let tree = LsmTree {
             mem: Arc::new(RwLock::new(mem)),
             disk,
+            wal: Arc::new(RwLock::new(Wal::empty(config.dir.clone()))),
             config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),
@@ -965,6 +985,7 @@ mod tests {
         let tree = LsmTree {
             mem: Arc::new(RwLock::new(mem)),
             disk,
+            wal: Arc::new(RwLock::new(Wal::empty(config.dir.clone()))),
             config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),

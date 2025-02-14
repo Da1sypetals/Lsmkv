@@ -1,36 +1,19 @@
 use bytes::Bytes;
+use crc32fast::Hasher;
+use farmhash::fingerprint64;
 
 pub(crate) type Index = Vec<(Bytes, u64)>;
 
-// pub struct BloomFilter {}
-
-// impl BloomFilter {
-//     pub fn new() -> Self {
-//         todo!()
-//     }
-
-//     pub fn add(&mut self) {
-//         todo!()
-//     }
-
-//     pub fn contains(&self, key: Vec<u8>) -> bool {
-//         todo!()
-//     }
-// }
-
-use crc32fast::Hasher;
-use farmhash::{fingerprint32, fingerprint64};
-
 pub struct BloomFilter {
-    bits: Vec<u8>,   // 位存储数组
-    k: u32,          // 哈希函数数量
-    num_bits: usize, // 总位数
+    bits: Vec<u8>,   // Bit storage array
+    k: u32,          // Number of hash functions
+    num_bits: usize, // Total number of bits
 }
 
 impl BloomFilter {
-    /// 创建新布隆过滤器
-    /// - num_bits: 总位数（根据假阳性率0.01计算）[^1]
-    /// - k: 哈希次数（默认7次）[^3]
+    /// Create a new Bloom filter
+    /// - num_bits: Total number of bits (calculated based on a false positive rate of 0.01)[^1]
+    /// - k: Number of hash functions (default is 7)[^3]
     pub fn new(num_bits: usize, k: u32) -> Self {
         let num_bytes = (num_bits + 7) / 8;
         BloomFilter {
@@ -40,22 +23,22 @@ impl BloomFilter {
         }
     }
 
-    /// 创建一个新的布隆过滤器，根据预期的元素数量和假阳性率自动计算参数。
+    /// Create a new Bloom filter, automatically calculating parameters based on the expected number of elements and the acceptable false positive rate.
     ///
-    /// - `scale`: 预期插入的元素数量。
-    /// - `fpr`: 可接受的假阳性率（例如 0.01 表示 1%）。
+    /// - `scale`: Expected number of elements to be inserted.
+    /// - `fpr`: Acceptable false positive rate (e.g., 0.01 for 1%).
     pub fn with_scale_and_fpr(scale: usize, fpr: f64) -> Self {
-        // 计算所需的位数 (num_bits)
+        // Calculate the required number of bits (num_bits)
         let num_bits = (-(scale as f64) * fpr.ln() / (2.0_f64.ln().powi(2))).ceil() as usize;
 
-        // 计算所需的哈希函数数量 (k)
+        // Calculate the required number of hash functions (k)
         let k = ((num_bits as f64 / scale as f64) * 2.0_f64.ln()).ceil() as u32;
 
-        // 调用现有的构造函数
+        // Call the existing constructor
         Self::new(num_bits, k)
     }
 
-    /// 插入键值
+    /// Insert a key
     pub fn insert(&mut self, key: &[u8]) {
         let mut h = fingerprint64(key);
         let delta = h >> 33 | h << 31;
@@ -67,7 +50,7 @@ impl BloomFilter {
         }
     }
 
-    /// 检查键存在性
+    /// Check if a key exists
     pub fn contains(&self, key: &[u8]) -> bool {
         let mut h = fingerprint64(key);
         let delta = h >> 33 | h << 31;
@@ -82,7 +65,7 @@ impl BloomFilter {
         true
     }
 
-    /// 编码为字节流（含校验和）
+    /// Encode as a byte stream (with checksum)
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(4 + 4 + self.bits.len() + 4);
         buf.extend_from_slice(&(self.num_bits as u32).to_le_bytes());
@@ -97,7 +80,7 @@ impl BloomFilter {
         buf
     }
 
-    /// 解码字节流（验证校验和）
+    /// Decode a byte stream (verify checksum)
     pub fn decode(data: &[u8]) -> Option<Self> {
         if data.len() < 12 {
             return None;
@@ -118,7 +101,7 @@ impl BloomFilter {
         Some(BloomFilter { bits, k, num_bits })
     }
 
-    // 私有辅助方法
+    // Private helper methods
     fn set_bit(&mut self, idx: usize) {
         let byte_idx = idx / 8;
         let bit_idx = idx % 8;
@@ -270,25 +253,25 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_large_dataset() {
-        // 创建一个布隆过滤器，假设我们预计插入100,000个键值
-        let num_bits = 1_000_000; // 根据假阳性率选择合适的位数
-        let k = 7; // 哈希函数数量
+        // Create a Bloom filter, assuming we expect to insert 100,000 keys
+        let num_bits = 1_000_000; // Choose an appropriate number of bits based on the false positive rate
+        let k = 7; // Number of hash functions
         let mut filter = BloomFilter::new(num_bits, k);
 
-        // 插入100,000个键值
+        // Insert 100,000 keys
         let num_keys = 100_000;
         for i in 0..num_keys {
             let key = format!("key_{}", i).into_bytes();
             filter.insert(&key);
         }
 
-        // 检查所有插入的键值是否存在于过滤器中
+        // Check if all inserted keys are present in the filter
         for i in 0..num_keys {
             let key = format!("key_{}", i).into_bytes();
             assert!(filter.contains(&key), "Key {} should be in the filter", i);
         }
 
-        // 检查一些未插入的键值，确保假阳性率在预期范围内
+        // Check some keys that were not inserted to ensure the false positive rate is within the expected range
         let mut false_positives = 0;
         let num_checks = 10_000;
         for i in num_keys..num_keys + num_checks {
@@ -298,12 +281,12 @@ mod tests {
             }
         }
 
-        // 输出假阳性率
+        // Output the false positive rate
         let false_positive_rate = false_positives as f64 / num_checks as f64;
         println!("False positive rate: {:.4}%", false_positive_rate * 100.0);
 
-        // 根据布隆过滤器的理论，假阳性率应低于某个阈值
-        // 这里我们假设假阳性率应低于1%
+        // According to Bloom filter theory, the false positive rate should be below a certain threshold
+        // Here we assume the false positive rate should be below 1%
         assert!(
             false_positive_rate < 0.03,
             "False positive rate is too high"
