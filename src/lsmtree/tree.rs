@@ -18,6 +18,7 @@ use scc::ebr::Guard;
 use scc::Queue;
 use std::collections::VecDeque;
 use std::os::unix::thread;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
@@ -112,8 +113,27 @@ impl LsmTree {
     }
 }
 
+// persistence utils
+impl LsmTree {
+    pub fn flush(&self) {
+        self.flush_signal.set();
+    }
+
+    pub fn persist(&mut self) {
+        self.mem.write().unwrap().force_freeze_current();
+        self.flush();
+    }
+}
+
+// constructors
 impl LsmTree {
     pub fn empty(config: LsmConfig) -> Self {
+        // first serialize and save config to tree.toml
+        let config_path = format!("{}/tree.toml", config.dir);
+        let config_str = toml::to_string(&config).expect("Failed to serialize config");
+        std::fs::write(config_path, config_str).expect("Failed to write config file");
+
+        // Init the empty LSM tree
         let flush_signal = Arc::new(Signal::new());
         let flush_signal_flusher = flush_signal.clone();
 
@@ -134,6 +154,7 @@ impl LsmTree {
                 if status == SignalReturnStatus::Terminated {
                     break;
                 }
+                // routine: flush
 
                 let mem = mem_flusher.read().unwrap();
                 while !mem.frozen.is_empty() {
@@ -159,6 +180,8 @@ impl LsmTree {
                     // wal: remove last wal file and its handle
                     wal_flusher.write().unwrap().pop_oldest();
                 }
+
+                disk_flusher.update_manifest();
             }
         });
 
@@ -174,13 +197,75 @@ impl LsmTree {
         tree
     }
 
-    pub fn flush(&self) {
-        self.flush_signal.set();
-    }
+    pub fn load(dir: impl AsRef<Path>) -> Self {
+        let dir_str = dir.as_ref().to_str().unwrap().to_string();
 
-    pub fn persist(&mut self) {
-        self.mem.write().unwrap().force_freeze_current();
-        self.flush();
+        // load config
+        let config_path = format!("{}/tree.toml", dir_str);
+        let config_str = std::fs::read_to_string(config_path).expect("Failed to read config file");
+        let config: LsmConfig = toml::from_str(&config_str).expect("Failed to parse config file");
+
+        // load WAL and replay it to get memory component
+        let wal = Arc::new(RwLock::new(Wal::load(&dir_str)));
+        let memory = wal.read().unwrap().replay();
+        let mem = Arc::new(RwLock::new(memory));
+
+        // load disk component
+        let disk = LsmDisk::empty(config.clone());
+
+        // setup flush mechanism
+        let flush_signal = Arc::new(Signal::new());
+        let flush_signal_flusher = flush_signal.clone();
+        let mem_flusher = mem.clone();
+        let disk_flusher = disk.clone();
+        let wal_flusher = wal.clone();
+        let config_flusher = config.clone();
+
+        let flush_handle = std::thread::spawn(move || {
+            loop {
+                let status = flush_signal_flusher.wait();
+                if status == SignalReturnStatus::Terminated {
+                    break;
+                }
+                // routine: flush
+
+                let mem = mem_flusher.read().unwrap();
+                while !mem.frozen.is_empty() {
+                    let relpath = disk_flusher.level_0.write().unwrap().get_filename();
+                    let guard = Guard::new();
+
+                    // clone the arc, use fully qualified name
+                    let table = Arc::clone(mem.frozen.peek(&guard).unwrap());
+
+                    let sst = SstWriter::new(
+                        config_flusher.sst.clone(),
+                        config_flusher.dir.clone(),
+                        relpath.clone(),
+                        table,
+                    );
+
+                    sst.build();
+
+                    disk_flusher.add_l0_sst(&relpath);
+
+                    mem.frozen.pop();
+
+                    // wal: remove last wal file and its handle
+                    wal_flusher.write().unwrap().pop_oldest();
+                }
+
+                disk_flusher.update_manifest();
+            }
+        });
+
+        Self {
+            config,
+            mem,
+            disk,
+            wal,
+            flush_signal,
+            flush_handle: Some(flush_handle),
+        }
     }
 }
 

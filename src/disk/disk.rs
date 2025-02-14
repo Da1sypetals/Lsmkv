@@ -1,4 +1,7 @@
-use super::sst::read::SstReader;
+use super::{
+    manifest::{self, LevelManifest, Manifest},
+    sst::read::SstReader,
+};
 use crate::{
     config::{disk::DiskConfig, lsm::LsmConfig},
     disk::sst::write::SstWriter,
@@ -233,6 +236,21 @@ impl LsmDisk {
 }
 
 impl LsmDisk {
+    pub(crate) fn update_manifest(&self) {
+        // build manifest
+        let manifest = Manifest {
+            level_0: LevelManifest::from_level(&self.level_0),
+            level_1: LevelManifest::from_level(&self.level_1),
+            level_2: LevelManifest::from_level(&self.level_2),
+            level_3: LevelManifest::from_level(&self.level_3),
+        };
+
+        // write manifest to file
+        let manifest_path = format!("{}/manifest.toml", self.config.dir);
+        let manifest_str = toml::to_string(&manifest).unwrap();
+        std::fs::write(manifest_path, manifest_str).unwrap();
+    }
+
     pub(crate) fn compact(
         self: &Arc<Self>,
         mut from: RwLockWriteGuard<LevelInner>,
@@ -324,10 +342,12 @@ impl LsmDisk {
             });
         }
 
-        dbg!(from.sst_readers.len());
-        dbg!(to.sst_readers.len());
+        // dbg!(from.sst_readers.len());
+        // dbg!(to.sst_readers.len());
 
         from.sst_readers.clear();
+
+        self.update_manifest();
     }
 }
 

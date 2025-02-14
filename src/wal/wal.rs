@@ -30,6 +30,10 @@ impl Wal {
     pub fn empty(dir: String) -> Self {
         let frozen = VecDeque::new();
         let dir = dir.clone();
+
+        // create dir for wal
+        std::fs::create_dir_all(format!("{}/wal", dir)).unwrap();
+
         let active_path = format!("{}/wal/wal-{}.log", dir, Uuid::new_v4().to_string());
         let active = BufWriter::new(File::create(&active_path).unwrap());
 

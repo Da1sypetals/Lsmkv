@@ -53,7 +53,7 @@ impl SstWriter {
             }
 
             // BF: add to bloom filter here
-            dbg!(kv.key());
+            // dbg!(kv.key());
             bloomfilter.insert(kv.key());
 
             // Write to disk via block
