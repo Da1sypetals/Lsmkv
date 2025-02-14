@@ -14,6 +14,8 @@ rand = "0.9.0"
 tempfile = "3.16.0"
 scc = "2.3.3"
 crossbeam-queue = "0.3.12"
+crc32fast = "1.4.2"
+farmhash = "1.1.5"
 
 [dev-dependencies]
 rand = "0.9.0"

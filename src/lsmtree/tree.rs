@@ -202,7 +202,11 @@ mod tests {
                 auto_compact: false,
             },
             memory: config,
-            sst: SstConfig { block_size: 1000 },
+            sst: SstConfig {
+                block_size: 1000,
+                scale: 100,
+                fpr: 0.01,
+            },
         };
 
         LsmTree {
@@ -571,7 +575,11 @@ mod tests {
                 freeze_size: 1000,
                 flush_size: 1000, // unused
             },
-            sst: SstConfig { block_size: 1000 },
+            sst: SstConfig {
+                block_size: 1000,
+                scale: 100,
+                fpr: 0.01,
+            },
         };
 
         // Create disk component
@@ -582,7 +590,11 @@ mod tests {
         level0_memtable.put(b"disk0_key1", b"disk0_value1");
         level0_memtable.put(b"disk0_key2", b"disk0_value2");
         let sst_writer = SstWriter::new(
-            SstConfig { block_size: 4096 },
+            SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
             dir_path.clone(),
             "sst1".to_string(),
             level0_memtable,
@@ -598,7 +610,11 @@ mod tests {
         level1_memtable.put(b"disk1_key1", b"disk1_value1");
         level1_memtable.put(b"disk1_key2", b"disk1_value2");
         let sst_writer = SstWriter::new(
-            SstConfig { block_size: 4096 },
+            SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
             dir_path.clone(),
             "sst2".to_string(),
             level1_memtable,
@@ -615,7 +631,11 @@ mod tests {
         level2_memtable.put(b"disk2_key2", b"disk2_value2");
         level2_memtable.put(b"shared_key", b"disk_value"); // Will be overridden by memory
         let sst_writer = SstWriter::new(
-            SstConfig { block_size: 4096 },
+            SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
             dir_path.clone(),
             "sst3".to_string(),
             level2_memtable,
@@ -679,7 +699,11 @@ mod tests {
                 freeze_size: 1000,
                 flush_size: 1000, // unused
             },
-            sst: SstConfig { block_size: 1000 },
+            sst: SstConfig {
+                block_size: 1000,
+                scale: 100,
+                fpr: 0.01,
+            },
         };
         // Create LSM tree with prefilled components
         let tree = LsmTree {
@@ -775,7 +799,11 @@ mod tests {
                 freeze_size: 10 * 1024 * 1024,
                 flush_size: 10 * 1024 * 1024, // unused
             },
-            sst: SstConfig { block_size: 1000 },
+            sst: SstConfig {
+                block_size: 1000,
+                scale: 100,
+                fpr: 0.01,
+            },
         };
         // Create disk component
         let mut disk = LsmDisk::empty(config);
@@ -792,7 +820,11 @@ mod tests {
         level0_memtable.put(b"shared_key2", b"disk0_shared_value");
 
         let sst_writer = SstWriter::new(
-            SstConfig { block_size: 4096 },
+            SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
             dir_path.clone(),
             "sst1".to_string(),
             level0_memtable,
@@ -814,7 +846,11 @@ mod tests {
         level1_memtable.put(b"shared_key4", b"disk1_shared_value");
 
         let sst_writer = SstWriter::new(
-            SstConfig { block_size: 4096 },
+            SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
             dir_path.clone(),
             "sst2".to_string(),
             level1_memtable,
@@ -836,7 +872,11 @@ mod tests {
         level2_memtable.put(b"shared_key6", b"disk2_shared_value");
 
         let sst_writer = SstWriter::new(
-            SstConfig { block_size: 4096 },
+            SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
             dir_path.clone(),
             "sst3".to_string(),
             level2_memtable,
@@ -914,7 +954,11 @@ mod tests {
                 freeze_size: 10 * 1024 * 1024,
                 flush_size: 10 * 1024 * 1024, // unused
             },
-            sst: SstConfig { block_size: 1000 },
+            sst: SstConfig {
+                block_size: 1000,
+                scale: 100,
+                fpr: 0.01,
+            },
         };
 
         // Create LSM tree with prefilled components

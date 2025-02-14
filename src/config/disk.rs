@@ -10,4 +10,6 @@ pub struct DiskConfig {
     pub(crate) level_2_threshold: usize,
 
     pub(crate) auto_compact: bool,
+
+
 }

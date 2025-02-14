@@ -66,7 +66,11 @@ fn test_data_distribution_across_layers() {
             freeze_size: 1024, // 1KB - small size to trigger freezing
             flush_size: 16384, // 2KB - small size to trigger flushing
         },
-        sst: SstConfig { block_size: 128 },
+        sst: SstConfig {
+            block_size: 128,
+            scale: 100,
+            fpr: 0.01,
+        },
     };
 
     let mut tree = LsmTree::empty(config);
@@ -370,7 +374,11 @@ fn test_deterministic_concurrent_operations() {
             freeze_size: 1024 * 1024,    // 1MB - smaller for more frequent freezes
             flush_size: 4 * 1024 * 1024, // 4MB - trigger flush after multiple freezes
         },
-        sst: SstConfig { block_size: 4096 },
+        sst: SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        },
     };
 
     let tree = Arc::new(LsmTree::empty(config));
@@ -579,7 +587,11 @@ fn test_simple() {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
             flush_size: 4 * 1024, // 4KB
         },
-        sst: SstConfig { block_size: 4096 },
+        sst: SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        },
     };
 
     let tree = LsmTree::empty(config);
@@ -662,7 +674,11 @@ fn test_serial_insert_versions() {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
             flush_size: 4 * 1024, // 4KB
         },
-        sst: SstConfig { block_size: 4096 },
+        sst: SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        },
     };
 
     let tree = LsmTree::empty(config);
@@ -825,7 +841,11 @@ fn test_concurrent_overwrite_delete() {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
             flush_size: 4 * 1024, // 4KB
         },
-        sst: SstConfig { block_size: 4096 },
+        sst: SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        },
     };
 
     let tree = Arc::new(LsmTree::empty(config));

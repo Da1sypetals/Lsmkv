@@ -11,6 +11,8 @@ use std::{
     sync::Arc,
 };
 
+use super::search::BloomFilter;
+
 pub struct SstWriter {
     config: SstConfig,
     memtable: Arc<Memtable>,
@@ -30,14 +32,13 @@ impl SstWriter {
     }
 
     pub fn build(self) {
-        
-
         // println!("Building SST file: {}/{}.data", self.dir, self.relpath);
         let mut datafile = File::create(&format!("{}/{}.data", self.dir, self.relpath)).unwrap();
         datafile.seek(std::io::SeekFrom::Start(0)).unwrap();
 
         let mut index = Index::new();
         // BF: bloom filter init here
+        let mut bloomfilter = BloomFilter::with_scale_and_fpr(self.config.scale, self.config.fpr);
 
         let mut cur_block = DataBlockWriter::new(&mut datafile, 0);
 
@@ -52,7 +53,8 @@ impl SstWriter {
             }
 
             // BF: add to bloom filter here
-
+            dbg!(kv.key());
+            bloomfilter.insert(kv.key());
 
             // Write to disk via block
             last_kv_size = cur_block.append(kv.key(), kv.value());
@@ -93,6 +95,10 @@ impl SstWriter {
         index_writer.flush().unwrap();
 
         // BF: Bloom filter file
+        let bloomfilterfile = File::create(&format!("{}/{}.bf", self.dir, self.relpath)).unwrap();
+        let mut bloomfilter_writer = BufWriter::new(bloomfilterfile);
+        bloomfilter_writer.write_all(&bloomfilter.encode()).unwrap();
+        bloomfilter_writer.flush().unwrap();
     }
 }
 
@@ -128,6 +134,8 @@ mod tests {
 
         let config = SstConfig {
             block_size: 4096, // Standard page size
+            scale: 100,
+            fpr: 0.01,
         };
 
         // Create memtable with 1000 entries
@@ -299,6 +307,8 @@ mod tests {
         // Use very small block size to force frequent block splits
         let config = SstConfig {
             block_size: 64, // Small block size
+            scale: 100,
+            fpr: 0.01,
         };
 
         // Create memtable with entries that will definitely cross block boundaries

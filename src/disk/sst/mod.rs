@@ -1,6 +1,5 @@
 pub mod read;
+pub mod search;
 pub mod write;
 
-use bytes::Bytes;
-
-pub(crate) type Index = Vec<(Bytes, u64)>;
+use crate::disk::sst::search::{BloomFilter, Index};

@@ -5,21 +5,7 @@ use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 
-pub struct BloomFilter {}
-
-impl BloomFilter {
-    pub fn new() -> Self {
-        todo!()
-    }
-
-    pub fn add(&mut self) {
-        todo!()
-    }
-
-    pub fn contains(&self) -> bool {
-        todo!()
-    }
-}
+use super::search::BloomFilter;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 /// This is index in the Index array.
@@ -55,10 +41,6 @@ impl SstReader {
     pub fn sst_path(&self) -> String {
         format!("{}/{}.data", self.dir, self.filename)
     }
-
-    pub fn bloomfilter_path(&self) -> String {
-        format!("{}/{}.bf", self.dir, self.filename)
-    }
 }
 
 impl SstReader {
@@ -68,6 +50,14 @@ impl SstReader {
     ///  - Some(Tomb) if the key is a tombstone
     pub fn get(&self, key: &[u8]) -> Option<Record> {
         // BF: First check bloom filter
+
+        let bloomfilter = self.get_bloomfilter();
+        // Bloom filter has no false negative
+        //   so we can return None if the key is not in the bloom filter
+        if !bloomfilter.contains(key) {
+            return None;
+        }
+
         let index = self.get_index();
 
         // dbg!(&index.len());
@@ -296,7 +286,11 @@ impl SstReader {
 
     fn get_bloomfilter(&self) -> BloomFilter {
         // BF: Read bloom filter from file
-        todo!()
+        let mut file = File::open(format!("{}/{}.bf", self.dir, self.filename)).unwrap();
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).unwrap();
+
+        BloomFilter::decode(&contents).unwrap()
     }
 }
 
@@ -729,7 +723,11 @@ mod tests {
         memtable.delete(b"key3"); // Add a tombstone
 
         // Write SST file
-        let config = SstConfig { block_size: 4096 };
+        let config = SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        };
         let writer = SstWriter::new(
             config,
             dir_path.clone(),
@@ -781,7 +779,11 @@ mod tests {
         }
 
         // Write SST file with small block size to force multiple blocks
-        let config = SstConfig { block_size: 512 };
+        let config = SstConfig {
+            block_size: 512,
+            scale: 100,
+            fpr: 0.01,
+        };
         let writer = SstWriter::new(
             config,
             dir_path.clone(),
@@ -831,7 +833,11 @@ mod tests {
         }
 
         // Write SST file
-        let config = SstConfig { block_size: 4096 };
+        let config = SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        };
         let writer = SstWriter::new(
             config,
             dir_path.clone(),
@@ -896,7 +902,11 @@ mod tests {
         }
 
         // Write SST file
-        let config = SstConfig { block_size: 4096 };
+        let config = SstConfig {
+            block_size: 4096,
+            scale: 100,
+            fpr: 0.01,
+        };
         let writer = SstWriter::new(
             config,
             dir_path.clone(),
