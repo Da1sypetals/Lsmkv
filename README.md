@@ -4,6 +4,4 @@
 
 
 # TODO
-1. Compact
-2. WAL
-3. Bloom Filter (or some advanced ones)
+1. Test the close-reload functionality and verify data integrity

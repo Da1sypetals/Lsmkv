@@ -1,7 +1,0 @@
-path = "test.db"
-
-[memory]
-freeze_size = 512 # in bytes
-
-[sst]
-block_size = 4096 # 4KB
