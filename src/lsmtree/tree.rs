@@ -108,7 +108,7 @@ impl LsmTree {
         let mem = Arc::new(RwLock::new(LsmMemory::empty()));
         let mem_flusher = mem.clone();
 
-        let disk = LsmDisk::empty(config.clone(), false);
+        let disk = LsmDisk::empty(config.clone());
         let disk_flusher = disk.clone();
 
         let config_flusher = config.clone();
@@ -199,6 +199,7 @@ mod tests {
                 level_0_threshold: 1,
                 level_1_threshold: 1,
                 level_2_threshold: 1,
+                auto_compact: false,
             },
             memory: config,
             sst: SstConfig { block_size: 1000 },
@@ -211,7 +212,7 @@ mod tests {
                 frozen: Queue::default(),
                 frozen_sizes: Queue::default(),
             })),
-            disk: LsmDisk::empty(config.clone(), false),
+            disk: LsmDisk::empty(config.clone()),
             config,
             // currently not used
             flush_signal: Arc::new(Signal::new()),
@@ -564,6 +565,7 @@ mod tests {
                 level_0_threshold: 1,
                 level_1_threshold: 1,
                 level_2_threshold: 1,
+                auto_compact: false,
             },
             memory: MemoryConfig {
                 freeze_size: 1000,
@@ -573,7 +575,7 @@ mod tests {
         };
 
         // Create disk component
-        let mut disk = LsmDisk::empty(config, false);
+        let mut disk = LsmDisk::empty(config);
 
         // Level 0 SST
         let level0_memtable = Arc::new(Memtable::new());
@@ -671,6 +673,7 @@ mod tests {
                 level_0_threshold: 1,
                 level_1_threshold: 1,
                 level_2_threshold: 1,
+                auto_compact: false,
             },
             memory: MemoryConfig {
                 freeze_size: 1000,
@@ -766,6 +769,7 @@ mod tests {
                 level_0_threshold: 1,
                 level_1_threshold: 1,
                 level_2_threshold: 1,
+                auto_compact: false,
             },
             memory: MemoryConfig {
                 freeze_size: 10 * 1024 * 1024,
@@ -774,7 +778,7 @@ mod tests {
             sst: SstConfig { block_size: 1000 },
         };
         // Create disk component
-        let mut disk = LsmDisk::empty(config, false);
+        let mut disk = LsmDisk::empty(config);
 
         // Level 0 SST - 10,000 entries
         let level0_memtable = Arc::new(Memtable::new());
@@ -904,6 +908,7 @@ mod tests {
                 level_0_threshold: 1000000000000000000,
                 level_1_threshold: 1000000000000000000,
                 level_2_threshold: 1000000000000000000,
+                auto_compact: false,
             },
             memory: MemoryConfig {
                 freeze_size: 10 * 1024 * 1024,

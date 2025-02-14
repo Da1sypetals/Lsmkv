@@ -37,6 +37,7 @@ impl SstWriter {
         datafile.seek(std::io::SeekFrom::Start(0)).unwrap();
 
         let mut index = Index::new();
+        // BF: bloom filter init here
 
         let mut cur_block = DataBlockWriter::new(&mut datafile, 0);
 
@@ -50,6 +51,10 @@ impl SstWriter {
                 // println!("Added index entry at offset {}: {:?}", offset, kv.key());
             }
 
+            // BF: add to bloom filter here
+
+
+            // Write to disk via block
             last_kv_size = cur_block.append(kv.key(), kv.value());
             offset += last_kv_size;
 
@@ -74,6 +79,7 @@ impl SstWriter {
             index.push((memtable_last.key().clone(), last_key_offset));
         }
 
+        // index file
         let indexfile = File::create(&format!("{}/{}.index", self.dir, self.relpath)).unwrap();
         let mut index_writer = BufWriter::new(indexfile);
         for (key, datafile_offset) in index {
@@ -85,6 +91,8 @@ impl SstWriter {
                 .unwrap();
         }
         index_writer.flush().unwrap();
+
+        // BF: Bloom filter file
     }
 }
 

@@ -5,6 +5,22 @@ use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 
+pub struct BloomFilter {}
+
+impl BloomFilter {
+    pub fn new() -> Self {
+        todo!()
+    }
+
+    pub fn add(&mut self) {
+        todo!()
+    }
+
+    pub fn contains(&self) -> bool {
+        todo!()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 /// This is index in the Index array.
 pub enum BisectResult {
@@ -39,6 +55,10 @@ impl SstReader {
     pub fn sst_path(&self) -> String {
         format!("{}/{}.data", self.dir, self.filename)
     }
+
+    pub fn bloomfilter_path(&self) -> String {
+        format!("{}/{}.bf", self.dir, self.filename)
+    }
 }
 
 impl SstReader {
@@ -47,6 +67,7 @@ impl SstReader {
     ///  - Some(Value) if the key is found
     ///  - Some(Tomb) if the key is a tombstone
     pub fn get(&self, key: &[u8]) -> Option<Record> {
+        // BF: First check bloom filter
         let index = self.get_index();
 
         // dbg!(&index.len());
@@ -271,6 +292,11 @@ impl SstReader {
         }
 
         index
+    }
+
+    fn get_bloomfilter(&self) -> BloomFilter {
+        // BF: Read bloom filter from file
+        todo!()
     }
 }
 

@@ -1,7 +1,3 @@
-use bytes::Bytes;
-use crossbeam_skiplist::SkipMap;
-use scc::HashSet;
-
 use super::sst::read::SstReader;
 use crate::{
     config::{disk::DiskConfig, lsm::LsmConfig},
@@ -9,8 +5,10 @@ use crate::{
     lsmtree::signal::{Signal, SignalReturnStatus},
     memory::{memtable::Memtable, record::Record},
 };
+use bytes::Bytes;
+use crossbeam_skiplist::SkipMap;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::{read, File},
     io::{BufReader, BufWriter, Read, Write},
     sync::{Arc, RwLock, RwLockWriteGuard},
@@ -84,7 +82,7 @@ impl LsmDisk {
     /// - The compact thread will wait on `compact_signal` and try compacting
     ///   L0 -> L1 when the number of sst files in L0 reaches
     ///   `config.disk.level_0_threshold`.
-    pub fn empty(config: LsmConfig, auto_compact: bool) -> Arc<Self> {
+    pub fn empty(config: LsmConfig) -> Arc<Self> {
         // create level subdirs if not exists
         std::fs::create_dir_all(format!("{}/level_0", config.dir)).unwrap();
         std::fs::create_dir_all(format!("{}/level_1", config.dir)).unwrap();
@@ -106,7 +104,7 @@ impl LsmDisk {
         // construct signal and compact thread
         let compact_signal_clone = disk.compact_signal.clone();
 
-        if auto_compact {
+        if disk.config.disk.auto_compact {
             *disk.compact_handle.write().unwrap() = Some(std::thread::spawn(move || {
                 //
                 loop {
@@ -269,8 +267,6 @@ impl LsmDisk {
             .map(|f| f.metadata().unwrap().len() as usize)
             .collect();
 
-        let mut approx_size = 0;
-
         // iterate from newest to oldest
         for (reader, size) in readers.iter_mut().zip(sizes) {
             let mut cursor = 0;
@@ -278,11 +274,13 @@ impl LsmDisk {
                 let kv = read_kv(reader);
                 let key = Bytes::copy_from_slice(&kv.key);
                 cursor += kv.size();
+
                 if keys.contains(&key) {
                     // do nothing
                 } else {
                     approx_size += kv.size();
-                    map.insert(key, kv.value);
+                    map.insert(key.clone(), kv.value);
+                    keys.insert(key);
                 }
 
                 if approx_size > threshold {
@@ -303,6 +301,7 @@ impl LsmDisk {
                     });
 
                     map = SkipMap::new();
+                    approx_size = 0;
                 }
             }
         }

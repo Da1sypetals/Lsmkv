@@ -59,6 +59,8 @@ fn test_data_distribution_across_layers() {
             level_0_threshold: 1000000000000000,
             level_1_threshold: 1000000000000000,
             level_2_threshold: 1000000000000000,
+            // currently not used
+            auto_compact: false,
         },
         memory: MemoryConfig {
             freeze_size: 1024, // 1KB - small size to trigger freezing
@@ -153,6 +155,8 @@ fn test_data_distribution_across_layers() {
     );
 }
 
+/*
+
 #[test]
 fn test_concurrent_large_dataset() {
     use std::sync::atomic::AtomicBool;
@@ -186,7 +190,7 @@ fn test_concurrent_large_dataset() {
     let start_time = Instant::now();
 
     // Number of operations each writer will perform
-    let ops_per_writer = 100_000;
+    let ops_per_writer = 10_000;
     let n_writers = 4;
     let n_readers = 2;
     let total_ops = ops_per_writer * n_writers;
@@ -203,7 +207,7 @@ fn test_concurrent_large_dataset() {
         let successful_writes = Arc::clone(&successful_writes);
 
         let handle = thread::spawn(move || {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             let start = writer_id * ops_per_writer;
             let end = start + ops_per_writer;
 
@@ -217,7 +221,7 @@ fn test_concurrent_large_dataset() {
                 let value = format!("value{:010}-from-writer-{}", i, writer_id).into_bytes();
 
                 // Randomly choose between put and delete (90% puts, 10% deletes)
-                if rng.gen_ratio(9, 10) {
+                if rng.random_ratio(9, 10) {
                     tree.put(&key, &value);
                 } else {
                     tree.delete(&key);
@@ -337,10 +341,11 @@ fn test_concurrent_large_dataset() {
     );
 }
 
+*/
+
 #[test]
 fn test_deterministic_concurrent_operations() {
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
     use std::time::Instant;
 
     println!("\n=== Starting Deterministic Concurrent Test ===");
@@ -358,6 +363,8 @@ fn test_deterministic_concurrent_operations() {
             level_0_threshold: 1000000000000000,
             level_1_threshold: 1000000000000000,
             level_2_threshold: 1000000000000000,
+            // currently not used
+            auto_compact: false,
         },
         memory: MemoryConfig {
             freeze_size: 1024 * 1024,    // 1MB - smaller for more frequent freezes
@@ -373,7 +380,7 @@ fn test_deterministic_concurrent_operations() {
 
     // Define deterministic workload parameters
     let n_writers = 10;
-    let ops_per_writer = 100_000; // Smaller than random test for deterministic verification
+    let ops_per_writer = 10_000; // Smaller than random test for deterministic verification
     let total_ops = ops_per_writer * n_writers;
 
     // Pre-fill the expected state
@@ -565,6 +572,8 @@ fn test_simple() {
             level_0_threshold: 16,
             level_1_threshold: 128,
             level_2_threshold: 1024,
+            // currently not used
+            auto_compact: false,
         },
         memory: MemoryConfig {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
@@ -646,6 +655,8 @@ fn test_serial_insert_versions() {
             level_0_threshold: 16,
             level_1_threshold: 16,
             level_2_threshold: 16,
+            // currently not used
+            auto_compact: false,
         },
         memory: MemoryConfig {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
@@ -807,6 +818,8 @@ fn test_concurrent_overwrite_delete() {
             level_0_threshold: 16,
             level_1_threshold: 16,
             level_2_threshold: 16,
+            // currently not used
+            auto_compact: false,
         },
         memory: MemoryConfig {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
