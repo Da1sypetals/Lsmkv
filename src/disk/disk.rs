@@ -1,9 +1,9 @@
 use super::{
-    manifest::{self, LevelManifest, Manifest},
+    manifest::{LevelManifest, Manifest},
     sst::read::SstReader,
 };
 use crate::{
-    config::{disk::DiskConfig, lsm::LsmConfig},
+    config::lsm::LsmConfig,
     disk::sst::write::SstWriter,
     lsmtree::signal::{Signal, SignalReturnStatus},
     memory::{memtable::Memtable, record::Record},
@@ -11,9 +11,9 @@ use crate::{
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fs::{self, read, File},
-    io::{BufReader, BufWriter, Read, Write},
+    collections::HashSet,
+    fs::{self, File},
+    io::{BufReader, Read},
     sync::{Arc, RwLock, RwLockWriteGuard},
     thread::JoinHandle,
 };
