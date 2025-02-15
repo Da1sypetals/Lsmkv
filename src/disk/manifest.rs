@@ -1,5 +1,9 @@
+use std::sync::RwLock;
+
 use crate::disk::disk::Level;
 use serde::{Deserialize, Serialize};
+
+use super::{disk::LevelInner, sst::read::SstReader};
 
 #[derive(Serialize, Deserialize)]
 pub struct LevelManifest {
@@ -18,6 +22,23 @@ impl LevelManifest {
                 .map(|r| r.filename.clone())
                 .collect(),
         }
+    }
+
+    pub(crate) fn as_level(&self, dir: &str, level: usize) -> Level {
+        let inner = LevelInner {
+            level,
+            counter: self.counter,
+            sst_readers: self
+                .filenames
+                .iter()
+                .map(|filename| SstReader {
+                    dir: dir.to_string(),
+                    filename: filename.to_string(),
+                })
+                .collect(),
+        };
+
+        RwLock::new(inner)
     }
 }
 

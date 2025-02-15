@@ -1037,7 +1037,8 @@ fn test_close_repoen() {
 
     let dir_path = "./db".to_string();
 
-    fs::remove_dir_all(&dir_path).unwrap();
+    _ = fs::remove_dir_all(&dir_path);
+    fs::create_dir(&dir_path).unwrap();
 
     let n_versions = 5;
     let n_keys = 10000;

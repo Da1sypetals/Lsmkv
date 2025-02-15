@@ -12,7 +12,7 @@ use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fs::{read, File},
+    fs::{self, read, File},
     io::{BufReader, BufWriter, Read, Write},
     sync::{Arc, RwLock, RwLockWriteGuard},
     thread::JoinHandle,
@@ -102,84 +102,29 @@ impl LsmDisk {
             level_3: RwLock::new(LevelInner::new(3)),
         });
 
-        let disk_clone = disk.clone();
-
-        // construct signal and compact thread
-        let compact_signal_clone = disk.compact_signal.clone();
-
-        if disk.config.disk.auto_compact {
-            *disk.compact_handle.write().unwrap() = Some(std::thread::spawn(move || {
-                //
-                loop {
-                    let status = compact_signal_clone.wait();
-                    if status == SignalReturnStatus::Terminated {
-                        break;
-                    }
-
-                    let level_0_size_threshold = disk_clone.config.disk.level_0_size_threshold;
-
-                    // try compact recursively
-                    // level 0
-                    if disk_clone.level_0.read().unwrap().sst_readers.len()
-                        > disk_clone.config.disk.level_0_threshold
-                    {
-                        println!("Start compact L0 -> L1 ...");
-                        disk_clone.compact(
-                            disk_clone.level_0.write().unwrap(),
-                            disk_clone.level_1.write().unwrap(),
-                            level_0_size_threshold,
-                        );
-
-                        let level_1_size_threshold =
-                            level_0_size_threshold * disk_clone.config.disk.block_size_multiplier;
-
-                        // level 1
-                        if disk_clone.level_1.read().unwrap().sst_readers.len()
-                            > disk_clone.config.disk.level_1_threshold
-                        {
-                            println!("Start compact L1 -> L2 ...");
-                            disk_clone.compact(
-                                disk_clone.level_1.write().unwrap(),
-                                disk_clone.level_2.write().unwrap(),
-                                level_1_size_threshold,
-                            );
-
-                            let level_2_size_threshold = level_1_size_threshold
-                                * disk_clone.config.disk.block_size_multiplier;
-
-                            // level 2
-                            if disk_clone.level_2.read().unwrap().sst_readers.len()
-                                > disk_clone.config.disk.level_2_threshold
-                            {
-                                disk_clone.compact(
-                                    disk_clone.level_2.write().unwrap(),
-                                    disk_clone.level_3.write().unwrap(),
-                                    level_2_size_threshold,
-                                );
-                            }
-                        }
-                    }
-                }
-            }));
-        } else {
-            println!("Auto compact is disabled");
-        }
+        disk.init_compact_thread();
 
         disk
     }
 
-    pub fn new(dir: String, config: LsmConfig) -> Self {
-        todo!("Properly initialize all readers and counters !");
+    pub fn load(config: LsmConfig) -> Arc<Self> {
+        let manifest: Manifest =
+            toml::from_str(&fs::read_to_string(&format!("{}/manifest.toml", &config.dir)).unwrap())
+                .unwrap();
 
-        Self {
+        let disk = Arc::new(Self {
+            compact_signal: Arc::new(Signal::new()),
+            compact_handle: RwLock::new(None),
+            level_0: manifest.level_0.as_level(&config.dir, 0),
+            level_1: manifest.level_1.as_level(&config.dir, 1),
+            level_2: manifest.level_2.as_level(&config.dir, 2),
+            level_3: manifest.level_3.as_level(&config.dir, 3),
             config,
-            compact_signal: todo!(),
-            compact_handle: todo!(),
-            level_0: todo!(),
-            level_1: todo!(),
-            level_2: todo!(),
-            level_3: todo!(),
-        }
+        });
+
+        disk.init_compact_thread();
+
+        disk
     }
 
     pub(crate) fn add_l0_sst(&self, replath: &str) {
@@ -194,6 +139,71 @@ impl LsmDisk {
         });
 
         self.compact_signal.set();
+    }
+
+    fn init_compact_thread(self: &Arc<Self>) {
+        let self_clone = self.clone();
+
+        // construct signal and compact thread
+        let compact_signal_clone = self.compact_signal.clone();
+
+        if self.config.disk.auto_compact {
+            *self.compact_handle.write().unwrap() = Some(std::thread::spawn(move || {
+                //
+                loop {
+                    let status = compact_signal_clone.wait();
+                    if status == SignalReturnStatus::Terminated {
+                        break;
+                    }
+
+                    let level_0_size_threshold = self_clone.config.disk.level_0_size_threshold;
+
+                    // try compact recursively
+                    // level 0
+                    if self_clone.level_0.read().unwrap().sst_readers.len()
+                        > self_clone.config.disk.level_0_threshold
+                    {
+                        println!("Start compact L0 -> L1 ...");
+                        self_clone.compact(
+                            self_clone.level_0.write().unwrap(),
+                            self_clone.level_1.write().unwrap(),
+                            level_0_size_threshold,
+                        );
+
+                        let level_1_size_threshold =
+                            level_0_size_threshold * self_clone.config.disk.block_size_multiplier;
+
+                        // level 1
+                        if self_clone.level_1.read().unwrap().sst_readers.len()
+                            > self_clone.config.disk.level_1_threshold
+                        {
+                            println!("Start compact L1 -> L2 ...");
+                            self_clone.compact(
+                                self_clone.level_1.write().unwrap(),
+                                self_clone.level_2.write().unwrap(),
+                                level_1_size_threshold,
+                            );
+
+                            let level_2_size_threshold = level_1_size_threshold
+                                * self_clone.config.disk.block_size_multiplier;
+
+                            // level 2
+                            if self_clone.level_2.read().unwrap().sst_readers.len()
+                                > self_clone.config.disk.level_2_threshold
+                            {
+                                self_clone.compact(
+                                    self_clone.level_2.write().unwrap(),
+                                    self_clone.level_3.write().unwrap(),
+                                    level_2_size_threshold,
+                                );
+                            }
+                        }
+                    }
+                }
+            }));
+        } else {
+            println!("Auto compact is disabled");
+        }
     }
 }
 
