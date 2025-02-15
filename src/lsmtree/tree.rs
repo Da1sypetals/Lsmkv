@@ -211,7 +211,7 @@ impl LsmTree {
         let mem = Arc::new(RwLock::new(memory));
 
         // load disk component
-        let disk = LsmDisk::empty(config.clone());
+        let disk = LsmDisk::load(config.clone());
 
         // setup flush mechanism
         let flush_signal = Arc::new(Signal::new());

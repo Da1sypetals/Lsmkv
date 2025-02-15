@@ -1043,14 +1043,14 @@ fn test_close_repoen() {
     let n_versions = 5;
     let n_keys = 10000;
 
-    let keygen = |x| format!("KEY-{:10}-{:10}", x, 37474 - x);
-    let valuegen = |x, rem| format!("VALUE-{:10}-{}", x, rem);
+    let keygen = |x| format!("KEY-{:010}-{:010}", x, 37474 - x);
+    let valuegen = |x, rem| format!("VALUE-{:010}-{}", x, rem);
 
     {
         let config = LsmConfig {
             dir: dir_path.clone(),
             disk: DiskConfig {
-                level_0_size_threshold: 1024,
+                level_0_size_threshold: 4096,
                 block_size_multiplier: 8,
                 level_0_threshold: 16,
                 level_1_threshold: 128,
@@ -1088,6 +1088,8 @@ fn test_close_repoen() {
         }
     }
 
+    println!("Insert completed");
+
     {
         let tree = LsmTree::load(dir_path);
         for i in 0..n_keys {
@@ -1098,9 +1100,30 @@ fn test_close_repoen() {
                 assert!(tree.get(key.as_bytes()).is_none());
             } else {
                 let value = tree.get(key.as_bytes());
-                dbg!(&value);
+                // dbg!(&value);
                 assert_eq!(value.unwrap(), valuegen(i, rem));
             }
         }
+
+        ///////////////////////////// print stats /////////////////////////////
+        let mem = tree.mem.read().unwrap();
+        println!("\nLSM Tree State:");
+        println!("------------------------");
+        println!("Memory:");
+        println!("  Active size: {}", mem.active_size.load(Ordering::Relaxed));
+        println!("  Frozen tables: {}", mem.frozen.len());
+        println!("Disk levels:");
+        println!(
+            "  Level 0: {}",
+            tree.disk.level_0.read().unwrap().sst_readers.len()
+        );
+        println!(
+            "  Level 1: {}",
+            tree.disk.level_1.read().unwrap().sst_readers.len()
+        );
+        println!(
+            "  Level 2: {}",
+            tree.disk.level_2.read().unwrap().sst_readers.len()
+        );
     }
 }
