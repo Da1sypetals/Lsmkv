@@ -18,8 +18,8 @@ use scc::Queue;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::thread;
 use std::time::Duration;
+use std::{fs, thread};
 use tempfile::tempdir;
 
 // ... existing code ...
@@ -1028,4 +1028,78 @@ fn test_concurrent_overwrite_delete() {
     assert!(verified > 0, "No entries were verified");
 
     println!("\n=== Concurrent Overwrite/Delete Test Completed Successfully ===");
+}
+
+#[test]
+fn test_close_repoen() {
+    // let temp_dir = tempdir().unwrap();
+    // let dir_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let dir_path = "./db".to_string();
+
+    fs::remove_dir_all(&dir_path).unwrap();
+
+    let n_versions = 5;
+    let n_keys = 10000;
+
+    let keygen = |x| format!("KEY-{:10}-{:10}", x, 37474 - x);
+    let valuegen = |x, rem| format!("VALUE-{:10}-{}", x, rem);
+
+    {
+        let config = LsmConfig {
+            dir: dir_path.clone(),
+            disk: DiskConfig {
+                level_0_size_threshold: 1024,
+                block_size_multiplier: 8,
+                level_0_threshold: 16,
+                level_1_threshold: 128,
+                level_2_threshold: 1024,
+                // currently not used
+                auto_compact: false,
+            },
+            memory: MemoryConfig {
+                freeze_size: 1024,    // 1KB - smaller for more frequent freezes
+                flush_size: 4 * 1024, // 4KB
+            },
+            sst: SstConfig {
+                block_size: 4096,
+                scale: 100,
+                fpr: 0.01,
+            },
+        };
+
+        let tree = LsmTree::empty(config);
+
+        for rem in 0..n_versions {
+            for i in 0..n_keys {
+                if i % n_versions == rem {
+                    let key = keygen(i);
+
+                    if rem == n_versions - 1 {
+                        tree.delete(key.as_bytes());
+                    } else {
+                        let value = valuegen(i, rem);
+
+                        tree.put(key.as_bytes(), value.as_bytes());
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let tree = LsmTree::load(dir_path);
+        for i in 0..n_keys {
+            let rem = i % n_versions;
+            let key = keygen(i);
+
+            if rem == n_versions - 1 {
+                assert!(tree.get(key.as_bytes()).is_none());
+            } else {
+                let value = tree.get(key.as_bytes());
+                dbg!(&value);
+                assert_eq!(value.unwrap(), valuegen(i, rem));
+            }
+        }
+    }
 }
