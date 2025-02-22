@@ -18,6 +18,12 @@ use std::{
     thread::JoinHandle,
 };
 
+pub enum CompactionLevel {
+    L01,
+    L12,
+    L23,
+}
+
 pub struct LevelInner {
     pub(crate) level: usize,
     pub(crate) counter: usize,
@@ -164,11 +170,7 @@ impl LsmDisk {
                         > self_clone.config.disk.level_0_threshold
                     {
                         println!("Start compact L0 -> L1 ...");
-                        self_clone.compact(
-                            self_clone.level_0.write().unwrap(),
-                            self_clone.level_1.write().unwrap(),
-                            level_0_size_threshold,
-                        );
+                        self_clone.compact(CompactionLevel::L01, level_0_size_threshold);
 
                         let level_1_size_threshold =
                             level_0_size_threshold * self_clone.config.disk.block_size_multiplier;
@@ -178,11 +180,7 @@ impl LsmDisk {
                             > self_clone.config.disk.level_1_threshold
                         {
                             println!("Start compact L1 -> L2 ...");
-                            self_clone.compact(
-                                self_clone.level_1.write().unwrap(),
-                                self_clone.level_2.write().unwrap(),
-                                level_1_size_threshold,
-                            );
+                            self_clone.compact(CompactionLevel::L12, level_1_size_threshold);
 
                             let level_2_size_threshold = level_1_size_threshold
                                 * self_clone.config.disk.block_size_multiplier;
@@ -191,11 +189,7 @@ impl LsmDisk {
                             if self_clone.level_2.read().unwrap().sst_readers.len()
                                 > self_clone.config.disk.level_2_threshold
                             {
-                                self_clone.compact(
-                                    self_clone.level_2.write().unwrap(),
-                                    self_clone.level_3.write().unwrap(),
-                                    level_2_size_threshold,
-                                );
+                                self_clone.compact(CompactionLevel::L23, level_2_size_threshold);
                             }
                         }
                     }
@@ -261,102 +255,119 @@ impl LsmDisk {
         std::fs::write(manifest_path, manifest_str).unwrap();
     }
 
-    pub(crate) fn compact(
-        self: &Arc<Self>,
-        mut from: RwLockWriteGuard<LevelInner>,
-        mut to: RwLockWriteGuard<LevelInner>,
-        threshold: usize,
-    ) {
+    pub(crate) fn compact(self: &Arc<Self>, level: CompactionLevel, threshold: usize) {
         let mut approx_size = 0;
         let mut map: SkipMap<Bytes, Record> = SkipMap::new();
         let mut keys: HashSet<Bytes> = HashSet::new();
 
-        // Iterate files from latest to oldest:
-        // 1. If the key does not exist in the map, insert key-record_size pair into the keys map;
-        // 2. update the approximate size;
-        // 3. if the approx size reaches the threshold, flush the btreemap content into a sst. clear the btreemap.
-        let files: Vec<_> = from
-            .sst_readers
-            .iter()
-            // iterate from newest to oldest
-            .rev()
-            .map(|sst| {
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .open(sst.sst_path())
-                    .unwrap()
-            })
-            .collect();
-
-        let mut readers: Vec<_> = files.iter().map(|f| BufReader::new(f)).collect();
-
-        let sizes: Vec<_> = files
-            .iter()
-            .map(|f| f.metadata().unwrap().len() as usize)
-            .collect();
-
-        // iterate from newest to oldest
-        for (reader, size) in readers.iter_mut().zip(sizes) {
-            let mut cursor = 0;
-            while cursor < size {
-                let kv = read_kv(reader);
-                let key = Bytes::copy_from_slice(&kv.key);
-                cursor += kv.size();
-
-                if keys.contains(&key) {
-                    // do nothing
-                } else {
-                    approx_size += kv.size();
-                    map.insert(key.clone(), kv.value);
-                    keys.insert(key);
+        {
+            let (mut from, mut to) = match level {
+                CompactionLevel::L01 => {
+                    let from = self.level_0.write().unwrap();
+                    let to = self.level_1.write().unwrap();
+                    (from, to)
                 }
+                CompactionLevel::L12 => {
+                    let from = self.level_1.write().unwrap();
+                    let to = self.level_2.write().unwrap();
+                    (from, to)
+                }
+                CompactionLevel::L23 => {
+                    let from = self.level_2.write().unwrap();
+                    let to = self.level_3.write().unwrap();
+                    (from, to)
+                }
+            };
 
-                if approx_size > threshold {
-                    // build sst writer
-                    let relpath = to.get_filename();
+            // Iterate files from latest to oldest:
+            // 1. If the key does not exist in the map, insert key-record_size pair into the keys map;
+            // 2. update the approximate size;
+            // 3. if the approx size reaches the threshold, flush the btreemap content into a sst. clear the btreemap.
+            let files: Vec<_> = from
+                .sst_readers
+                .iter()
+                // iterate from newest to oldest
+                .rev()
+                .map(|sst| {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .open(sst.sst_path())
+                        .unwrap()
+                })
+                .collect();
 
-                    let writer = SstWriter::new(
-                        self.config.sst.clone(),
-                        self.config.dir.clone(),
-                        relpath.clone(),
-                        Memtable { map }.into(),
-                    );
-                    writer.build();
+            let mut readers: Vec<_> = files.iter().map(|f| BufReader::new(f)).collect();
 
-                    to.sst_readers.push(SstReader {
-                        dir: self.config.dir.clone(),
-                        filename: relpath,
-                    });
+            let sizes: Vec<_> = files
+                .iter()
+                .map(|f| f.metadata().unwrap().len() as usize)
+                .collect();
 
-                    map = SkipMap::new();
-                    approx_size = 0;
+            // iterate from newest to oldest
+            for (reader, size) in readers.iter_mut().zip(sizes) {
+                let mut cursor = 0;
+                while cursor < size {
+                    let kv = read_kv(reader);
+                    let key = Bytes::copy_from_slice(&kv.key);
+                    cursor += kv.size();
+
+                    if keys.contains(&key) {
+                        // do nothing
+                    } else {
+                        approx_size += kv.size();
+                        map.insert(key.clone(), kv.value);
+                        keys.insert(key);
+                    }
+
+                    if approx_size > threshold {
+                        // build sst writer
+                        let relpath = to.get_filename();
+
+                        let writer = SstWriter::new(
+                            self.config.sst.clone(),
+                            self.config.dir.clone(),
+                            relpath.clone(),
+                            Memtable { map }.into(),
+                        );
+                        writer.build();
+
+                        to.sst_readers.push(SstReader {
+                            dir: self.config.dir.clone(),
+                            filename: relpath,
+                        });
+
+                        map = SkipMap::new();
+                        approx_size = 0;
+                    }
                 }
             }
-        }
 
-        // write tail to a new sst
-        if map.len() > 0 {
-            let relpath = to.get_filename();
+            // write tail to a new sst
+            if map.len() > 0 {
+                let relpath = to.get_filename();
 
-            let writer = SstWriter::new(
-                self.config.sst.clone(),
-                self.config.dir.clone(),
-                relpath.clone(),
-                Memtable { map }.into(),
-            );
-            writer.build();
+                let writer = SstWriter::new(
+                    self.config.sst.clone(),
+                    self.config.dir.clone(),
+                    relpath.clone(),
+                    Memtable { map }.into(),
+                );
+                writer.build();
 
-            to.sst_readers.push(SstReader {
-                dir: self.config.dir.clone(),
-                filename: relpath,
-            });
-        }
+                to.sst_readers.push(SstReader {
+                    dir: self.config.dir.clone(),
+                    filename: relpath,
+                });
+            }
 
-        // dbg!(from.sst_readers.len());
-        // dbg!(to.sst_readers.len());
+            // dbg!(from.sst_readers.len());
+            // dbg!(to.sst_readers.len());
 
-        from.sst_readers.clear();
+            from.sst_readers.clear();
+        } // `from` and `to` will be released here
 
+        // `from` and `to` will be acquired here, thus deadlocks.
+        // so we need to release them before updating manifest.
         self.update_manifest();
     }
 }

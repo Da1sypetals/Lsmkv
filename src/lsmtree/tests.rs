@@ -47,11 +47,11 @@ fn test_data_distribution_across_layers() {
         disk: DiskConfig {
             level_0_size_threshold: 65536,
             block_size_multiplier: 1,
-            level_0_threshold: 1000000000000000,
-            level_1_threshold: 1000000000000000,
+            level_0_threshold: 32,
+            level_1_threshold: 32,
             level_2_threshold: 1000000000000000,
             // currently not used
-            auto_compact: false,
+            auto_compact: true,
         },
         memory: MemoryConfig {
             freeze_size: 1024, // 1KB - small size to trigger freezing
@@ -355,11 +355,11 @@ fn test_deterministic_concurrent_operations() {
         disk: DiskConfig {
             level_0_size_threshold: 65536,
             block_size_multiplier: 1,
-            level_0_threshold: 1000000000000000,
-            level_1_threshold: 1000000000000000,
+            level_0_threshold: 32,
+            level_1_threshold: 32,
             level_2_threshold: 1000000000000000,
             // currently not used
-            auto_compact: false,
+            auto_compact: true,
         },
         memory: MemoryConfig {
             freeze_size: 1024 * 1024,    // 1MB - smaller for more frequent freezes
@@ -572,7 +572,7 @@ fn test_simple() {
             level_1_threshold: 128,
             level_2_threshold: 1024,
             // currently not used
-            auto_compact: false,
+            auto_compact: true,
         },
         memory: MemoryConfig {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
@@ -826,7 +826,7 @@ fn test_concurrent_overwrite_delete() {
             level_1_threshold: 16,
             level_2_threshold: 16,
             // currently not used
-            auto_compact: false,
+            auto_compact: true,
         },
         memory: MemoryConfig {
             freeze_size: 1024,    // 1KB - smaller for more frequent freezes
@@ -870,7 +870,7 @@ fn test_concurrent_overwrite_delete() {
             // println!("Writer {} starting", writer_id);
 
             for op_num in 0..ops_per_writer {
-                if op_num % 100 == 0 {
+                if op_num % (ops_per_writer / 10) == 0 {
                     println!("Writer {} op {}", writer_id, op_num);
                 }
 

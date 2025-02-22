@@ -24,6 +24,18 @@ impl LevelManifest {
         }
     }
 
+    pub(crate) fn from_level_guard(level: &Level) -> Self {
+        let guard = level.read().unwrap();
+        Self {
+            counter: guard.counter,
+            filenames: guard
+                .sst_readers
+                .iter()
+                .map(|r| r.filename.clone())
+                .collect(),
+        }
+    }
+
     pub(crate) fn as_level(&self, dir: &str, level: usize) -> Level {
         let inner = LevelInner {
             level,
