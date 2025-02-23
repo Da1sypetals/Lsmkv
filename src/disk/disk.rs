@@ -3,13 +3,18 @@ use super::{
     sst::read::SstReader,
 };
 use crate::{
+    clock::Clock,
     config::lsm::LsmConfig,
     disk::sst::write::SstWriter,
     lsmtree::signal::{Signal, SignalReturnStatus},
-    memory::{memtable::Memtable, record::Record},
+    memory::{
+        memtable::Memtable,
+        types::{Key, Record},
+    },
 };
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
+use scc::HashMap;
 use std::{
     collections::HashSet,
     fs::{self, File},
@@ -22,6 +27,34 @@ pub enum CompactionLevel {
     L01,
     L12,
     L23,
+}
+
+impl CompactionLevel {
+    pub fn from_to_levels<'a>(
+        &self,
+        disk: &'a Arc<LsmDisk>,
+    ) -> (
+        RwLockWriteGuard<'a, LevelInner>,
+        RwLockWriteGuard<'a, LevelInner>,
+    ) {
+        match self {
+            CompactionLevel::L01 => {
+                let from = disk.level_0.write().unwrap();
+                let to = disk.level_1.write().unwrap();
+                (from, to)
+            }
+            CompactionLevel::L12 => {
+                let from = disk.level_1.write().unwrap();
+                let to = disk.level_2.write().unwrap();
+                (from, to)
+            }
+            CompactionLevel::L23 => {
+                let from = disk.level_2.write().unwrap();
+                let to = disk.level_3.write().unwrap();
+                (from, to)
+            }
+        }
+    }
 }
 
 pub struct LevelInner {
@@ -91,7 +124,7 @@ impl LsmDisk {
     /// - The compact thread will wait on `compact_signal` and try compacting
     ///   L0 -> L1 when the number of sst files in L0 reaches
     ///   `config.disk.level_0_threshold`.
-    pub fn empty(config: LsmConfig) -> Arc<Self> {
+    pub fn empty(config: LsmConfig, clock: &Arc<Clock>) -> Arc<Self> {
         // create level subdirs if not exists
         std::fs::create_dir_all(format!("{}/level_0", config.dir)).unwrap();
         std::fs::create_dir_all(format!("{}/level_1", config.dir)).unwrap();
@@ -108,12 +141,12 @@ impl LsmDisk {
             level_3: RwLock::new(LevelInner::new(3)),
         });
 
-        disk.init_compact_thread();
+        disk.init_compact_thread(&clock);
 
         disk
     }
 
-    pub fn load(config: LsmConfig) -> Arc<Self> {
+    pub fn load(config: LsmConfig, clock: &Arc<Clock>) -> Arc<Self> {
         let manifest: Manifest =
             toml::from_str(&fs::read_to_string(&format!("{}/manifest.toml", &config.dir)).unwrap())
                 .unwrap();
@@ -128,7 +161,7 @@ impl LsmDisk {
             config,
         });
 
-        disk.init_compact_thread();
+        disk.init_compact_thread(clock);
 
         disk
     }
@@ -147,8 +180,9 @@ impl LsmDisk {
         self.compact_signal.set();
     }
 
-    fn init_compact_thread(self: &Arc<Self>) {
+    fn init_compact_thread(self: &Arc<Self>, clock: &Arc<Clock>) {
         let self_clone = self.clone();
+        let clock_clone = clock.clone();
 
         // construct signal and compact thread
         let compact_signal_clone = self.compact_signal.clone();
@@ -162,6 +196,8 @@ impl LsmDisk {
                         break;
                     }
 
+                    let oldest_timestamp = clock_clone.oldest_marker();
+
                     let level_0_size_threshold = self_clone.config.disk.level_0_size_threshold;
 
                     // try compact recursively
@@ -170,7 +206,11 @@ impl LsmDisk {
                         > self_clone.config.disk.level_0_threshold
                     {
                         println!("Start compact L0 -> L1 ...");
-                        self_clone.compact(CompactionLevel::L01, level_0_size_threshold);
+                        self_clone.compact(
+                            CompactionLevel::L01,
+                            level_0_size_threshold,
+                            oldest_timestamp,
+                        );
 
                         let level_1_size_threshold =
                             level_0_size_threshold * self_clone.config.disk.block_size_multiplier;
@@ -180,7 +220,11 @@ impl LsmDisk {
                             > self_clone.config.disk.level_1_threshold
                         {
                             println!("Start compact L1 -> L2 ...");
-                            self_clone.compact(CompactionLevel::L12, level_1_size_threshold);
+                            self_clone.compact(
+                                CompactionLevel::L12,
+                                level_1_size_threshold,
+                                oldest_timestamp,
+                            );
 
                             let level_2_size_threshold = level_1_size_threshold
                                 * self_clone.config.disk.block_size_multiplier;
@@ -189,7 +233,12 @@ impl LsmDisk {
                             if self_clone.level_2.read().unwrap().sst_readers.len()
                                 > self_clone.config.disk.level_2_threshold
                             {
-                                self_clone.compact(CompactionLevel::L23, level_2_size_threshold);
+                                println!("Start compact L2 -> L3 ...");
+                                self_clone.compact(
+                                    CompactionLevel::L23,
+                                    level_2_size_threshold,
+                                    oldest_timestamp,
+                                );
                             }
                         }
                     }
@@ -255,12 +304,22 @@ impl LsmDisk {
         std::fs::write(manifest_path, manifest_str).unwrap();
     }
 
-    pub(crate) fn compact(self: &Arc<Self>, level: CompactionLevel, threshold: usize) {
+    pub(crate) fn compact(
+        self: &Arc<Self>,
+        level: CompactionLevel,
+        threshold: usize,
+        oldest_timestamp: u64,
+    ) {
         let mut approx_size = 0;
-        let mut map: SkipMap<Bytes, Record> = SkipMap::new();
-        let mut keys: HashSet<Bytes> = HashSet::new();
+        // each outdated key contain at MOST 1 version
+        let mut keys_outdated: HashSet<Vec<u8>> = HashSet::new();
+        let mut map: SkipMap<Key, Record> = SkipMap::new();
 
         {
+            // Determine compaction Level
+            let (mut from, mut to) = level.from_to_levels(self);
+            /*
+
             let (mut from, mut to) = match level {
                 CompactionLevel::L01 => {
                     let from = self.level_0.write().unwrap();
@@ -278,6 +337,7 @@ impl LsmDisk {
                     (from, to)
                 }
             };
+             */
 
             // Iterate files from latest to oldest:
             // 1. If the key does not exist in the map, insert key-record_size pair into the keys map;
@@ -307,16 +367,25 @@ impl LsmDisk {
             for (reader, size) in readers.iter_mut().zip(sizes) {
                 let mut cursor = 0;
                 while cursor < size {
+                    // 1. read a record ------------------------------------
                     let kv = read_kv(reader);
-                    let key = Bytes::copy_from_slice(&kv.key);
+                    let key = Key::from_slice(&kv.key, kv.timestamp);
                     cursor += kv.size();
 
-                    if keys.contains(&key) {
-                        // do nothing
+                    // 2. Insert logic -------------------------------------
+                    if key.timestamp < oldest_timestamp {
+                        if keys_outdated.contains(&kv.key) {
+                            // <1> Outdated && has newer version, skip older version
+                        } else {
+                            // <2> Outdated but no newer version, insert
+                            approx_size += kv.size();
+                            map.insert(key.clone(), kv.value);
+                            keys_outdated.insert(kv.key);
+                        }
                     } else {
+                        // <3> Insert kv pair
                         approx_size += kv.size();
                         map.insert(key.clone(), kv.value);
-                        keys.insert(key);
                     }
 
                     if approx_size > threshold {
@@ -372,16 +441,18 @@ impl LsmDisk {
     }
 }
 
+#[derive(Debug)]
 pub struct Kv {
     key: Vec<u8>,
+    timestamp: u64,
     value: Record,
 }
 
 impl Kv {
     pub fn size(&self) -> usize {
         match &self.value {
-            Record::Value(value) => 1 + 2 + 2 + self.key.len() + value.len(),
-            Record::Tomb => 1 + 2 + self.key.len(),
+            Record::Value(value) => 1 + 8 + 2 + 2 + self.key.len() + value.len(),
+            Record::Tomb => 1 + 8 + 2 + self.key.len(),
         }
     }
 }
@@ -390,6 +461,9 @@ fn read_kv(reader: &mut BufReader<&File>) -> Kv {
     // Read record type
     let mut buf = Vec::new();
     buf.resize(1, 0);
+
+    let mut timestamp_buf = [0u8; 8];
+    let mut size_buf = [0u8; 2];
 
     // reader.read_exact(&mut buf).unwrap();
     match reader.read_exact(&mut buf) {
@@ -411,17 +485,20 @@ fn read_kv(reader: &mut BufReader<&File>) -> Kv {
             else, seek to next kv pair.
         */
         0 => {
+            // Read timestamp
+            reader.read_exact(&mut timestamp_buf).unwrap();
+            let timestamp = u64::from_le_bytes(timestamp_buf.to_vec().try_into().unwrap());
+            // println!("Value record: timestamp = {}", timestamp);
+
             // Value record
             // Read key size
-            buf.resize(2, 0);
-            reader.read_exact(&mut buf).unwrap();
-            let key_size = u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+            reader.read_exact(&mut size_buf).unwrap();
+            let key_size = u16::from_le_bytes(size_buf.to_vec().try_into().unwrap()) as usize;
             // println!("Value record: key_size = {}", key_size);
 
             // Read value size
-            buf.resize(2, 0);
-            reader.read_exact(&mut buf).unwrap();
-            let value_size = u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+            reader.read_exact(&mut size_buf).unwrap();
+            let value_size = u16::from_le_bytes(size_buf.to_vec().try_into().unwrap()) as usize;
             // println!("Value record: value_size = {}", value_size);
 
             // Read key
@@ -438,15 +515,20 @@ fn read_kv(reader: &mut BufReader<&File>) -> Kv {
 
             Kv {
                 key,
+                timestamp,
                 value: Record::Value(Bytes::copy_from_slice(&value)),
             }
         }
         1 => {
+            // Read timestamp
+            reader.read_exact(&mut timestamp_buf).unwrap();
+            let timestamp = u64::from_le_bytes(timestamp_buf.to_vec().try_into().unwrap());
+            // println!("Tomb record: timestamp = {}", timestamp);
+
             // Tomb record
             // Read key size
-            buf.resize(2, 0);
-            reader.read_exact(&mut buf).unwrap();
-            let key_size = u16::from_le_bytes(buf.to_vec().try_into().unwrap()) as usize;
+            reader.read_exact(&mut size_buf).unwrap();
+            let key_size = u16::from_le_bytes(size_buf.to_vec().try_into().unwrap()) as usize;
             // println!("Tomb record: key_size = {}", key_size);
 
             // Read key
@@ -458,6 +540,7 @@ fn read_kv(reader: &mut BufReader<&File>) -> Kv {
 
             Kv {
                 key,
+                timestamp,
                 value: Record::Tomb,
             }
         }

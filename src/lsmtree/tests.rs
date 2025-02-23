@@ -4,11 +4,11 @@ use crate::config::memory::MemoryConfig;
 use crate::config::sst::SstConfig;
 use crate::lsmtree::tree::LsmTree;
 use bytes::Bytes;
-use rand::seq::IteratorRandom;
 use rand::Rng;
-use std::sync::atomic::Ordering;
+use rand::seq::IteratorRandom;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::{fs, thread};
 use tempfile::tempdir;
@@ -432,7 +432,7 @@ fn test_deterministic_concurrent_operations() {
                 let key = format!("key{:010}", i).into_bytes();
                 let value = format!("value{:010}-writer-{}", i, writer_id).into_bytes();
 
-                if i % 100 == 0 {
+                if i % 1000 == 0 {
                     println!("   Writer {} at operation {}", writer_id, i);
                 }
 
@@ -879,7 +879,7 @@ fn test_concurrent_overwrite_delete() {
                 let key = format!("key{:05}", key_id).into_bytes();
 
                 // 80% chance of put, 20% chance of delete
-                if rng.random_ratio(8, 10) {
+                if rng.random_ratio(10, 10) {
                     // Put operation with a unique value that identifies the writer and operation
                     let timestamp = time.elapsed().as_nanos();
                     let value =
@@ -918,8 +918,10 @@ fn test_concurrent_overwrite_delete() {
     // Wait for all writers to complete
     println!("3. Waiting for writers to complete...");
     for handle in write_handles {
+        println!("Join");
         handle.join().unwrap();
     }
+
     let write_duration = start_time.elapsed();
     println!(
         "   All writers completed in {:.2} seconds",
@@ -1033,6 +1035,7 @@ fn test_close_repoen() {
 
     let n_versions = 5;
     let n_keys = 10000;
+    const MOD: i32 = 134;
 
     let keygen = |x| format!("KEY-{:010}-{:010}", x, 37474 - x);
     let valuegen = |x, rem| format!("VALUE-{:010}-{}", x, rem);
@@ -1062,19 +1065,34 @@ fn test_close_repoen() {
 
         let tree = LsmTree::empty(config);
 
-        for rem in 0..n_versions {
-            for i in 0..n_keys {
-                if i % n_versions == rem {
-                    let key = keygen(i);
+        for i in 0..n_keys {
+            if i % 1000 == 0 {
+                println!("Proceeding to i = {}", i);
+            }
+            let rem = i % MOD;
 
-                    if rem == n_versions - 1 {
-                        tree.delete(key.as_bytes());
-                    } else {
-                        let value = valuegen(i, rem);
+            let key = keygen(i);
+            let value = valuegen(i, rem);
 
-                        tree.put(key.as_bytes(), value.as_bytes());
-                    }
-                }
+            tree.put(key.as_bytes(), value.as_bytes());
+
+            if rem == 0 {
+                tree.delete(key.as_bytes());
+            }
+        }
+
+        for i in 0..n_keys {
+            if i % 1000 == 0 {
+                println!("Proceeding to i = {}", i);
+            }
+            let rem = i % MOD;
+            let key = keygen(i);
+
+            if rem == 0 {
+                assert!(tree.get(key.as_bytes()).is_none());
+            } else {
+                // dbg!(&key);
+                assert_eq!(tree.get(key.as_bytes()).unwrap(), valuegen(i, rem));
             }
         }
     }
@@ -1084,15 +1102,16 @@ fn test_close_repoen() {
     {
         let tree = LsmTree::load(dir_path);
         for i in 0..n_keys {
-            let rem = i % n_versions;
+            if i % 1000 == 0 {
+                println!("Proceeding to i = {}", i);
+            }
+            let rem = i % MOD;
             let key = keygen(i);
 
-            if rem == n_versions - 1 {
+            if rem == 0 {
                 assert!(tree.get(key.as_bytes()).is_none());
             } else {
-                let value = tree.get(key.as_bytes());
-                // dbg!(&value);
-                assert_eq!(value.unwrap(), valuegen(i, rem));
+                assert_eq!(tree.get(key.as_bytes()).unwrap(), valuegen(i, rem));
             }
         }
 

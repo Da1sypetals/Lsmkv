@@ -1,3 +1,4 @@
+pub mod binary_search;
 pub mod read;
 pub mod search;
 pub mod write;

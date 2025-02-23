@@ -1,9 +1,13 @@
+use crate::memory::types::Key;
 use bytes::Bytes;
 use crc32fast::Hasher;
 use farmhash::fingerprint64;
 
-pub(crate) type Index = Vec<(Bytes, u64)>;
+pub(crate) type Index = Vec<(Key, u64)>;
 
+/// Bloom filter only checks membership of key.
+/// It discards timestamp.
+/// This matches the behavior of bloom filter that has no false negative.
 pub struct BloomFilter {
     bits: Vec<u8>,   // Bit storage array
     k: u32,          // Number of hash functions

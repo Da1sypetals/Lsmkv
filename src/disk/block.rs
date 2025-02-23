@@ -1,10 +1,9 @@
+use crate::memory::types::{Key, Record};
 use bytes::Bytes;
 use std::{
     fs::File,
     io::{BufWriter, Seek, SeekFrom, Write},
 };
-
-use crate::memory::record::Record;
 
 pub struct DataBlockWriter<'a> {
     len: usize,
@@ -23,36 +22,56 @@ impl<'a> DataBlockWriter<'a> {
     }
 
     /// Returns the number of bytes written
-    pub fn append(&mut self, key: &Bytes, value: &Record) -> u64 {
+    pub fn append(&mut self, key: &Key, value: &Record) -> u64 {
+        // encoding: record format
         let kv_size = match value {
             Record::Value(value) => {
-                let key_size = key.len() as u16;
+                let key_size = key.key.len() as u16;
                 let value_size = value.len() as u16;
 
-                // for Value
+                // record type
                 self.buf_writer.write_all(&[0u8]).unwrap();
 
+                // timestamp
+                self.buf_writer
+                    .write_all(&key.timestamp.to_le_bytes())
+                    .unwrap();
+
+                // key size
                 self.buf_writer.write_all(&key_size.to_le_bytes()).unwrap();
+
+                // value size
                 self.buf_writer
                     .write_all(&value_size.to_le_bytes())
                     .unwrap();
 
-                self.buf_writer.write_all(&key).unwrap();
+                // key
+                self.buf_writer.write_all(&key.key).unwrap();
+
+                // value
                 self.buf_writer.write_all(&value).unwrap();
 
-                // type keysize key valuesize value
-                1 + 2 + key_size + 2 + value_size
+                // type timestamp key_size value_size key value
+                1 + 8 + 2 + 2 + key_size + value_size
             }
             Record::Tomb => {
                 // for Tomb
                 self.buf_writer.write_all(&[1u8]).unwrap();
-                let key_size = key.len() as u16;
+                let key_size = key.key.len() as u16;
 
+                // timestamp
+                self.buf_writer
+                    .write_all(&key.timestamp.to_le_bytes())
+                    .unwrap();
+
+                // key size
                 self.buf_writer.write_all(&key_size.to_le_bytes()).unwrap();
-                self.buf_writer.write_all(&key).unwrap();
 
-                // type key_size key
-                1 + 2 + key_size
+                // key
+                self.buf_writer.write_all(&key.key).unwrap();
+
+                // type timestamp key_size key
+                1 + 8 + 2 + key_size
             }
         } as u64;
 

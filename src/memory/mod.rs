@@ -1,3 +1,3 @@
 pub mod memory;
 pub mod memtable;
-pub mod record;
+pub mod types;
