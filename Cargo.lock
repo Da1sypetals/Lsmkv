@@ -197,26 +197,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lever"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "crc32fast",
- "crossbeam-queue",
- "crossbeam-skiplist",
- "dashmap",
- "farmhash",
- "log",
- "pretty_env_logger",
- "rand",
- "scc",
- "serde",
- "tempfile",
- "toml",
- "uuid",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.169"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -243,6 +223,26 @@ name = "log"
 version = "0.4.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
+
+[[package]]
+name = "lsmkv"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "crc32fast",
+ "crossbeam-queue",
+ "crossbeam-skiplist",
+ "dashmap",
+ "farmhash",
+ "log",
+ "pretty_env_logger",
+ "rand",
+ "scc",
+ "serde",
+ "tempfile",
+ "toml",
+ "uuid",
+]
 
 [[package]]
 name = "memchr"
