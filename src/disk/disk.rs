@@ -105,7 +105,7 @@ pub struct LsmDisk {
 impl Drop for LsmDisk {
     fn drop(&mut self) {
         if let Some(handle) = self.compact_handle.write().unwrap().take() {
-            handle.join().unwrap();
+            _ = handle.join();
         }
     }
 }
@@ -143,6 +143,7 @@ impl LsmDisk {
         });
 
         disk.init_compact_thread(&clock);
+        disk.update_manifest();
 
         disk
     }

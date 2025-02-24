@@ -80,12 +80,12 @@ impl<'a> Transaction<'a> {
                     mem.delete(&key_bytes, timestamp);
                 }
             }
-
-            // End transaction
-            wal.log(LogRecord::TransactionEnd {
-                end_timestamp,
-                transaction_id: self.transaction_id,
-            });
         }
+
+        // End transaction
+        wal.log(LogRecord::TransactionEnd {
+            end_timestamp,
+            transaction_id: self.transaction_id,
+        });
     }
 }

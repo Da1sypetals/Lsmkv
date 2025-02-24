@@ -464,10 +464,10 @@ fn test_configurable_transactions() {
 
 #[test]
 fn test_transaction_durability() {
-    // let temp_dir = tempdir().unwrap();
-    // let dir_path = temp_dir.path().to_str().unwrap().to_string();
+    let temp_dir = tempdir().unwrap();
+    let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let dir_path = "./db".to_string();
+    // let dir_path = "./db".to_string();
 
     let config = LsmConfig {
         dir: dir_path.clone(),
@@ -505,9 +505,6 @@ fn test_transaction_durability() {
         tx.put(b"tx-k1", b"tx-v1");
         tx.put(b"tx-k2", b"tx-v2");
 
-        // Force persist current state
-        tree.persist();
-
         // Simulate crash by dropping the tree
         drop(tree);
 
@@ -531,11 +528,13 @@ fn test_transaction_durability() {
         // Put some base data
         tree.put(b"base3", b"value3");
         tree.put(b"base4", b"value4");
+        tree.put(b"txremove_key", b"txremove_value");
 
         // Create and commit a transaction
         let mut tx = tree.new_transaction();
         tx.put(b"tx-k3", b"tx-v3");
         tx.put(b"tx-k4", b"tx-v4");
+        tx.delete(b"txremove_key");
         tx.commit();
 
         // Don't explicitly persist, simulate immediate crash
@@ -551,6 +550,7 @@ fn test_transaction_durability() {
         // Verify committed transaction data is recovered from WAL
         assert_eq!(tree.get(b"tx-k3"), Some(Bytes::from("tx-v3")));
         assert_eq!(tree.get(b"tx-k4"), Some(Bytes::from("tx-v4")));
+        assert!(tree.get(b"txremove_key").is_none());
     }
 
     println!("========== Scenario 2 OK =========");
@@ -560,4 +560,139 @@ fn test_transaction_durability() {
     // Clean up is handled by tempdir
 }
 
-// todo here
+#[test]
+fn test_large_transaction_durability() {
+    let temp_dir = tempdir().unwrap();
+    let dir_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let config = LsmConfig {
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            level_0_size_threshold: 65536,
+            block_size_multiplier: 1,
+            level_0_threshold: 32,
+            level_1_threshold: 32,
+            level_2_threshold: 100000,
+            auto_compact: true,
+        },
+        memory: MemoryConfig {
+            freeze_size: 1024,
+            flush_size: 16384,
+        },
+        sst: SstConfig {
+            block_size: 128,
+            scale: 100,
+            fpr: 0.01,
+        },
+    };
+
+    // ---------------------------- test logic ----------------------------
+
+    // First scenario: Large transaction that fails to commit before shutdown
+    {
+        let mut tree = LsmTree::empty(config.clone());
+
+        // Put a large amount of base data
+        for i in 0..1000 {
+            let key = format!("base{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            tree.put(&key, &value);
+        }
+
+        // Create a transaction with large amount of data but don't commit it
+        let mut tx = tree.new_transaction();
+        for i in 0..1000 {
+            let key = format!("tx-k{}", i).into_bytes();
+            let value = format!("tx-v{}", i).into_bytes();
+            tx.put(&key, &value);
+        }
+
+        // Simulate crash by dropping the tree
+        drop(tree);
+
+        // Reload the tree
+        let tree = LsmTree::load(&dir_path);
+
+        // Verify base data is there
+        for i in 0..1000 {
+            let key = format!("base{}", i).into_bytes();
+            let expected_value = format!("value{}", i);
+            assert_eq!(tree.get(&key), Some(Bytes::from(expected_value)));
+        }
+
+        // Verify uncommitted transaction data is not there
+        for i in 0..1000 {
+            let key = format!("tx-k{}", i).into_bytes();
+            assert_eq!(tree.get(&key), None);
+        }
+    }
+    println!("========== Large Scenario 1 OK =========");
+
+    // Second scenario: Large transaction that commits but might not be persisted
+    {
+        let mut tree = LsmTree::empty(config.clone());
+
+        // Put a large amount of base data
+        for i in 0..1000 {
+            let key = format!("base{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            tree.put(&key, &value);
+        }
+
+        // Add some keys that will be deleted by transaction
+        for i in 0..100 {
+            let key = format!("to_delete{}", i).into_bytes();
+            let value = format!("delete_value{}", i).into_bytes();
+            tree.put(&key, &value);
+        }
+
+        // Create and commit a large transaction
+        let mut tx = tree.new_transaction();
+        for i in 0..1000 {
+            let key = format!("tx-k{}", i).into_bytes();
+            let value = format!("tx-v{}", i).into_bytes();
+            tx.put(&key, &value);
+        }
+
+        // Delete some keys in the transaction
+        for i in 0..100 {
+            let key = format!("to_delete{}", i).into_bytes();
+            tx.delete(&key);
+        }
+
+        // Commit the transaction
+        tx.commit();
+
+        // Don't explicitly persist, simulate immediate crash
+        drop(tree);
+
+        // Reload the tree
+        let tree = LsmTree::load(&dir_path);
+
+        // Verify base data is there
+        for i in 0..1000 {
+            let key = format!("base{}", i).into_bytes();
+            let expected_value = format!("value{}", i);
+            assert_eq!(tree.get(&key), Some(Bytes::from(expected_value)));
+        }
+
+        // Verify committed transaction data is recovered from WAL
+        for i in 0..1000 {
+            let key = format!("tx-k{}", i).into_bytes();
+            let expected_value = format!("tx-v{}", i);
+            assert_eq!(tree.get(&key), Some(Bytes::from(expected_value)));
+        }
+
+        // Verify deleted keys are actually deleted
+        for i in 0..100 {
+            let key = format!("to_delete{}", i).into_bytes();
+            assert_eq!(tree.get(&key), None);
+        }
+    }
+
+    println!("========== Large Scenario 2 OK =========");
+
+    // ---------------------------- test logic ----------------------------
+
+    // Clean up is handled by tempdir
+}

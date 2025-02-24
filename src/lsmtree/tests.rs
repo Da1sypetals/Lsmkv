@@ -1068,7 +1068,7 @@ fn test_close_repoen() {
 
         for i in 0..n_keys {
             if i % 1000 == 0 {
-                println!("Write roceeding to i = {}", i);
+                println!("Write proceeding to i = {}", i);
             }
             let rem = i % MOD;
 
@@ -1084,7 +1084,7 @@ fn test_close_repoen() {
 
         for i in 0..n_keys {
             if i % 1000 == 0 {
-                println!("Check #1 roceeding to i = {}", i);
+                println!("Check #1 proceeding to i = {}", i);
             }
             let rem = i % MOD;
             let key = keygen(i);

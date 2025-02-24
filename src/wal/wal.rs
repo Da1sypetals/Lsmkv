@@ -45,12 +45,16 @@ impl Wal {
         let active_path = format!("{}/wal/wal-{}.log", dir, Uuid::new_v4().to_string());
         let active = BufWriter::new(File::create(&active_path).unwrap());
 
-        Wal {
+        let mut wal = Wal {
             dir,
             active_path,
             active,
             frozen,
-        }
+        };
+
+        wal.update_manifest();
+
+        wal
     }
 
     pub fn log(&mut self, record: LogRecord) {

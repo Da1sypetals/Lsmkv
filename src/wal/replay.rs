@@ -83,6 +83,7 @@ impl WalReplayer {
                             memtable.delete(&key, timestamp);
                         }
                         2 => {
+                            // println!("TX start");
                             // Transaction Start
                             // encode -----------------------------------------------------
                             // Read start timestamp
@@ -98,6 +99,7 @@ impl WalReplayer {
                             self.transactions.insert(transaction_id, BTreeMap::new());
                         }
                         3 => {
+                            // println!("TX value");
                             // Transaction Value
                             // encode -----------------------------------------------------
                             // Read transaction id
@@ -133,6 +135,7 @@ impl WalReplayer {
                             }
                         }
                         4 => {
+                            // println!("TX tomb");
                             // Transaction Tomb
                             // encode -----------------------------------------------------
                             // Read transaction id
@@ -157,6 +160,7 @@ impl WalReplayer {
                             }
                         }
                         5 => {
+                            // println!("TX end");
                             // Transaction End
                             // encode -----------------------------------------------------
                             // Read end timestamp

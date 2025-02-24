@@ -61,7 +61,7 @@ impl Drop for LsmTree {
         self.disk.compact_signal.kill();
 
         if let Some(handle) = self.flush_handle.take() {
-            handle.join().unwrap();
+            _ = handle.join();
         }
         // else, there is no flushing thread, which is used in tests
     }
@@ -310,6 +310,7 @@ impl LsmTree {
                 // routine: flush
 
                 let mem = mem_flusher.read().unwrap();
+                let mut wal = wal_flusher.write().unwrap();
                 while !mem.frozen.is_empty() {
                     let relpath = disk_flusher.level_0.write().unwrap().get_filename();
                     let guard = Guard::new();
@@ -331,7 +332,7 @@ impl LsmTree {
                     mem.frozen.pop();
 
                     // wal: remove last wal file and its handle
-                    wal_flusher.write().unwrap().pop_oldest();
+                    wal.pop_oldest();
                 }
 
                 disk_flusher.update_manifest();
