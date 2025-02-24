@@ -181,6 +181,8 @@ impl WalReplayer {
                                     }
                                 }
                             }
+
+                            self.transactions.remove(&transaction_id);
                         }
                         rec_type => {
                             panic!("Unexpected record type: {}", rec_type);

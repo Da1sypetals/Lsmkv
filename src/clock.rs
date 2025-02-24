@@ -97,7 +97,8 @@ impl Clock {
         //     write!(f, "{} {}", self.timestamp, self.transaction_id)
         // refer to the format of the file and parse the cur string
         // the two numbers are separated by a space
-        dbg!(&cur);
+
+        // dbg!(&cur);
         let parts: Vec<&str> = cur.split_whitespace().collect();
         let timestamp = parts[0].parse::<u64>().unwrap();
         let transaction_id = parts[1].parse::<u64>().unwrap();

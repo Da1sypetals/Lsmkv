@@ -461,3 +461,103 @@ fn test_configurable_transactions() {
     );
     println!("{}", report);
 }
+
+#[test]
+fn test_transaction_durability() {
+    // let temp_dir = tempdir().unwrap();
+    // let dir_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let dir_path = "./db".to_string();
+
+    let config = LsmConfig {
+        dir: dir_path.clone(),
+        disk: DiskConfig {
+            level_0_size_threshold: 65536,
+            block_size_multiplier: 1,
+            level_0_threshold: 32,
+            level_1_threshold: 32,
+            level_2_threshold: 100000,
+            auto_compact: true,
+        },
+        memory: MemoryConfig {
+            freeze_size: 1024,
+            flush_size: 16384,
+        },
+        sst: SstConfig {
+            block_size: 128,
+            scale: 100,
+            fpr: 0.01,
+        },
+    };
+
+    // ---------------------------- test logic ----------------------------
+
+    // First scenario: Transaction that fails to commit before shutdown
+    {
+        let mut tree = LsmTree::empty(config.clone());
+
+        // Put some base data
+        tree.put(b"base1", b"value1");
+        tree.put(b"base2", b"value2");
+
+        // Create a transaction but don't commit it
+        let mut tx = tree.new_transaction();
+        tx.put(b"tx-k1", b"tx-v1");
+        tx.put(b"tx-k2", b"tx-v2");
+
+        // Force persist current state
+        tree.persist();
+
+        // Simulate crash by dropping the tree
+        drop(tree);
+
+        // Reload the tree
+        let tree = LsmTree::load(&dir_path);
+
+        // Verify base data is there
+        assert_eq!(tree.get(b"base1"), Some(Bytes::from("value1")));
+        assert_eq!(tree.get(b"base2"), Some(Bytes::from("value2")));
+
+        // Verify uncommitted transaction data is not there
+        assert_eq!(tree.get(b"tx-k1"), None);
+        assert_eq!(tree.get(b"tx-k2"), None);
+    }
+    println!("========== Scenario 1 OK =========");
+
+    // Second scenario: Transaction that commits but might not be persisted
+    {
+        let mut tree = LsmTree::empty(config.clone());
+
+        // Put some base data
+        tree.put(b"base3", b"value3");
+        tree.put(b"base4", b"value4");
+
+        // Create and commit a transaction
+        let mut tx = tree.new_transaction();
+        tx.put(b"tx-k3", b"tx-v3");
+        tx.put(b"tx-k4", b"tx-v4");
+        tx.commit();
+
+        // Don't explicitly persist, simulate immediate crash
+        drop(tree);
+
+        // Reload the tree
+        let tree = LsmTree::load(&dir_path);
+
+        // Verify base data is there
+        assert_eq!(tree.get(b"base3"), Some(Bytes::from("value3")));
+        assert_eq!(tree.get(b"base4"), Some(Bytes::from("value4")));
+
+        // Verify committed transaction data is recovered from WAL
+        assert_eq!(tree.get(b"tx-k3"), Some(Bytes::from("tx-v3")));
+        assert_eq!(tree.get(b"tx-k4"), Some(Bytes::from("tx-v4")));
+    }
+
+    println!("========== Scenario 2 OK =========");
+
+    // ---------------------------- test logic ----------------------------
+
+    // Clean up is handled by tempdir
+}
+
+// todo here

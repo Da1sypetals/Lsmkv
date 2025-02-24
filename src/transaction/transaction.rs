@@ -41,17 +41,17 @@ impl<'a> Transaction<'a> {
 impl<'a> Transaction<'a> {
     pub fn commit(self) {
         let end_timestamp = self.tree.clock.tick();
-        // write WAL
-        {
-            let mut wal = self.tree.wal.write().unwrap();
-            wal.log(LogRecord::TransactionEnd {
-                end_timestamp,
-                transaction_id: self.transaction_id,
-            });
-        }
+        // acquire locks
+        let mut wal = self.tree.wal.write().unwrap();
+        let mem = self.tree.mem.read().unwrap();
+
+        // Start transaction
+        wal.log(LogRecord::TransactionStart {
+            start_timestamp: self.start_timestamp,
+            transaction_id: self.transaction_id,
+        });
 
         // write to tree
-        let mem = self.tree.mem.read().unwrap();
         for (key_bytes, value) in self.tempmap {
             // println!("value {}, wal lock", String::from_utf8_lossy(value));
             let timestamp = self.tree.clock.tick();
@@ -61,12 +61,31 @@ impl<'a> Transaction<'a> {
             // println!("value {}, mem lock", String::from_utf8_lossy(value));
             match value {
                 Record::Value(value_bytes) => {
+                    // write WAL
+                    wal.log(LogRecord::TransactionValue {
+                        transaction_id: self.transaction_id,
+                        key: &key_bytes,
+                        value: &value_bytes,
+                    });
+                    // write mem
                     mem.put(&key_bytes, &value_bytes, timestamp);
                 }
                 Record::Tomb => {
+                    // write WAL
+                    wal.log(LogRecord::TransactionTomb {
+                        transaction_id: self.transaction_id,
+                        key: &key_bytes,
+                    });
+                    // write mem
                     mem.delete(&key_bytes, timestamp);
                 }
             }
+
+            // End transaction
+            wal.log(LogRecord::TransactionEnd {
+                end_timestamp,
+                transaction_id: self.transaction_id,
+            });
         }
     }
 }
