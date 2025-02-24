@@ -61,7 +61,7 @@ impl Drop for LsmTree {
         self.disk.compact_signal.kill();
 
         if let Some(handle) = self.flush_handle.take() {
-            _ = handle.join();
+            handle.join().unwrap();
         }
         // else, there is no flushing thread, which is used in tests
     }
@@ -296,6 +296,7 @@ impl LsmTree {
         // setup flush mechanism
         let flush_signal = Arc::new(Signal::new());
         let flush_signal_flusher = flush_signal.clone();
+
         let mem_flusher = mem.clone();
         let disk_flusher = disk.clone();
         let wal_flusher = wal.clone();

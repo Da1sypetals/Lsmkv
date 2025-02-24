@@ -104,8 +104,14 @@ pub struct LsmDisk {
 
 impl Drop for LsmDisk {
     fn drop(&mut self) {
+        // REMINDME: kill compact signal before join
         if let Some(handle) = self.compact_handle.write().unwrap().take() {
-            _ = handle.join();
+            let handle_thread_id = handle.thread().id();
+            let current_thread_id = std::thread::current().id();
+            if handle_thread_id != current_thread_id {
+                // Only join if the thread is not the current one
+                let _ = handle.join().unwrap();
+            }
         }
     }
 }
