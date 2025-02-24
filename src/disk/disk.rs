@@ -21,6 +21,7 @@ use std::{
     io::{BufReader, Read},
     sync::{Arc, RwLock, RwLockWriteGuard},
     thread::JoinHandle,
+    u64,
 };
 
 pub enum CompactionLevel {
@@ -251,10 +252,10 @@ impl LsmDisk {
 }
 
 impl LsmDisk {
-    pub fn get(&self, key: &[u8]) -> Option<Record> {
+    pub fn get_by_time(&self, key: &[u8], timestamp: u64) -> Option<Record> {
         // Use .rev() to search from newest to oldest
         for sst in self.level_0.read().unwrap().sst_readers.iter().rev() {
-            let val = sst.get(key);
+            let val = sst.get_by_time(key, timestamp);
             if val.is_some() {
                 return val;
             }
@@ -262,7 +263,7 @@ impl LsmDisk {
 
         // Use .rev() to search from newest to oldest
         for sst in self.level_1.read().unwrap().sst_readers.iter().rev() {
-            let val = sst.get(key);
+            let val = sst.get_by_time(key, timestamp);
             if val.is_some() {
                 return val;
             }
@@ -270,7 +271,7 @@ impl LsmDisk {
 
         // Use .rev() to search from newest to oldest
         for sst in self.level_2.read().unwrap().sst_readers.iter().rev() {
-            let val = sst.get(key);
+            let val = sst.get_by_time(key, timestamp);
             if val.is_some() {
                 return val;
             }
@@ -278,13 +279,17 @@ impl LsmDisk {
 
         // Use .rev() to search from newest to oldest
         for sst in self.level_3.read().unwrap().sst_readers.iter().rev() {
-            let val = sst.get(key);
+            let val = sst.get_by_time(key, timestamp);
             if val.is_some() {
                 return val;
             }
         }
 
         None
+    }
+
+    pub fn get(&self, key: &[u8]) -> Option<Record> {
+        self.get_by_time(key, u64::MAX)
     }
 }
 

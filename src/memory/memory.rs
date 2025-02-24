@@ -71,7 +71,7 @@ impl LsmMemory {
     }
 
     /// Snapshot read
-    pub fn get_at_time(&self, key: &[u8], timestamp: u64) -> Option<Record> {
+    pub fn get_by_time(&self, key: &[u8], timestamp: u64) -> Option<Record> {
         let opt_rec_active = self.active.get_at_time(key, timestamp);
         if opt_rec_active.is_some() {
             return opt_rec_active;

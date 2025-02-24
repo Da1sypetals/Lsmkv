@@ -1028,6 +1028,7 @@ fn test_close_repoen() {
     // let temp_dir = tempdir().unwrap();
     // let dir_path = temp_dir.path().to_str().unwrap().to_string();
 
+    // let dir_path = tempdir().unwrap().path().to_string_lossy().into_owned();
     let dir_path = "./db".to_string();
 
     _ = fs::remove_dir_all(&dir_path);
@@ -1067,7 +1068,7 @@ fn test_close_repoen() {
 
         for i in 0..n_keys {
             if i % 1000 == 0 {
-                println!("Proceeding to i = {}", i);
+                println!("Write roceeding to i = {}", i);
             }
             let rem = i % MOD;
 
@@ -1083,7 +1084,7 @@ fn test_close_repoen() {
 
         for i in 0..n_keys {
             if i % 1000 == 0 {
-                println!("Proceeding to i = {}", i);
+                println!("Check #1 roceeding to i = {}", i);
             }
             let rem = i % MOD;
             let key = keygen(i);
@@ -1103,7 +1104,7 @@ fn test_close_repoen() {
         let tree = LsmTree::load(dir_path);
         for i in 0..n_keys {
             if i % 1000 == 0 {
-                println!("Proceeding to i = {}", i);
+                println!("Chec #2 proceeding to i = {}", i);
             }
             let rem = i % MOD;
             let key = keygen(i);

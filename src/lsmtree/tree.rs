@@ -7,6 +7,8 @@ use crate::disk::disk::LsmDisk;
 use crate::disk::sst::write::SstWriter;
 use crate::memory::memory::LsmMemory;
 use crate::memory::types::Record;
+use crate::transaction::transaction::Transaction;
+use crate::wal::log_record::LogRecord;
 use crate::wal::wal::{Wal, WalValue};
 use bytes::Bytes;
 use rand::SeedableRng;
@@ -14,12 +16,13 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use scc::Queue;
 use scc::ebr::Guard;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::thread;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
+use std::u64;
 use tempfile::tempdir;
 
 pub struct LsmTree {
@@ -80,12 +83,76 @@ impl LsmTree {
             mem.put(key, value, timestamp);
 
             // wal: write to Wal log
-            wal.log(key, WalValue::Value(value), timestamp);
+            let record = LogRecord::Value {
+                timestamp,
+                key,
+                value,
+            };
+            wal.log(record);
             // WRITE PATH END -----------------------------------------
 
             mem.active_size.load(std::sync::atomic::Ordering::Relaxed)
         };
 
+        self.try_freeze(current_size);
+    }
+
+    /// Current read
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        self.get_by_time(key, u64::MAX)
+    }
+
+    /// Current read
+    pub fn get_by_time(&self, key: &[u8], timestamp: u64) -> Option<Bytes> {
+        let mem = self.mem.read().unwrap();
+        let mem_val = mem.get_by_time(key, timestamp);
+        if let Some(value) = mem_val {
+            // data reside on memory
+            return match value {
+                Record::Value(bytes) => Some(bytes),
+                Record::Tomb => None,
+            };
+        }
+
+        // data probably reside on disk
+        match self.disk.get_by_time(key, timestamp) {
+            Some(Record::Value(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn delete(&self, key: &[u8]) {
+        // WRITE PATH ---------------------------------------------
+        let mut wal = self.wal.write().unwrap();
+        let timestamp = self.clock.tick();
+
+        let mem = self.mem.read().unwrap();
+        mem.delete(key, timestamp);
+
+        let record = LogRecord::Tomb { timestamp, key };
+        wal.log(record);
+        // WRITE PATH END ---------------------------------------------
+    }
+
+    // /// Current read
+    // pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+    //     let mem = self.mem.read().unwrap();
+    //     let mem_val = mem.get(key);
+    //     if let Some(value) = mem_val {
+    //         // data reside on memory
+    //         return match value {
+    //             Record::Value(bytes) => Some(bytes),
+    //             Record::Tomb => None,
+    //         };
+    //     }
+    //     // data probably reside on disk
+    //     match self.disk.get(key) {
+    //         Some(Record::Value(value)) => Some(value),
+    //         _ => None,
+    //     }
+    // }
+
+    pub fn try_freeze(&self, current_size: usize) {
         if current_size > self.config.memory.freeze_size {
             let mut wal = self.wal.write().unwrap();
             // println!("value {}, wal lock, flush", String::from_utf8_lossy(value));
@@ -104,36 +171,17 @@ impl LsmTree {
             }
         }
     }
+}
 
-    /// Current read
-    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
-        let mem = self.mem.read().unwrap();
-        let mem_val = mem.get(key);
-        if let Some(value) = mem_val {
-            // data reside on memory
-            return match value {
-                Record::Value(bytes) => Some(bytes),
-                Record::Tomb => None,
-            };
+impl LsmTree {
+    pub fn new_transaction<'a>(&'a self) -> Transaction<'a> {
+        let tx_timestamp = self.clock.tick_transaction();
+        Transaction {
+            tree: self,
+            tempmap: BTreeMap::new(),
+            transaction_id: tx_timestamp.transaction_id,
+            start_timestamp: tx_timestamp.timestamp,
         }
-
-        // data probably reside on disk
-        match self.disk.get(key) {
-            Some(Record::Value(value)) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn delete(&self, key: &[u8]) {
-        // WRITE PATH ---------------------------------------------
-        let mut wal = self.wal.write().unwrap();
-        let timestamp = self.clock.tick();
-
-        let mem = self.mem.read().unwrap();
-        mem.delete(key, timestamp);
-
-        wal.log(key, WalValue::Tomb, timestamp);
-        // WRITE PATH END ---------------------------------------------
     }
 }
 
@@ -228,7 +276,7 @@ impl LsmTree {
     }
 
     pub fn load(dir: impl AsRef<Path>) -> Self {
-        let clock = Arc::new(Clock::new(dir.as_ref().to_str().unwrap().to_string()));
+        let clock = Arc::new(Clock::load(dir.as_ref().to_str().unwrap().to_string()));
 
         let dir_str = dir.as_ref().to_str().unwrap().to_string();
 

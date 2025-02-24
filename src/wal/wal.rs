@@ -1,7 +1,10 @@
+use super::log_record::LogRecord;
+use super::replay::WalReplayer;
 use crate::memory::memory::LsmMemory;
 use crate::memory::memtable::Memtable;
 use scc::Queue;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::{
@@ -50,9 +53,13 @@ impl Wal {
         }
     }
 
-    pub fn log(&mut self, key: &[u8], value: WalValue, timestamp: u64) {
-        match value {
-            WalValue::Value(value) => {
+    pub fn log(&mut self, record: LogRecord) {
+        match record {
+            LogRecord::Value {
+                key,
+                value,
+                timestamp,
+            } => {
                 self.active.write_all(&[0]).unwrap();
 
                 // encode -----------------------------------------------------
@@ -74,10 +81,8 @@ impl Wal {
                 // write value
                 self.active.write_all(value).unwrap();
                 // encode -----------------------------------------------------
-
-                self.active.flush().unwrap();
             }
-            WalValue::Tomb => {
+            LogRecord::Tomb { key, timestamp } => {
                 // encode -----------------------------------------------------
                 // write tombstone
                 self.active.write_all(&[1]).unwrap();
@@ -93,11 +98,143 @@ impl Wal {
 
                 // write key
                 self.active.write_all(key).unwrap();
+            }
+            LogRecord::TransactionStart {
+                start_timestamp,
+                transaction_id,
+            } => {
+                // encode -----------------------------------------------------
+                // write tombstone
+                self.active.write_all(&[2]).unwrap();
 
-                self.active.flush().unwrap();
+                // write timestamp
+                let timestamp_bytes = start_timestamp.to_le_bytes();
+                self.active.write_all(&timestamp_bytes).unwrap();
+
+                // write transaction id
+                let transaction_id_bytes = transaction_id.to_le_bytes();
+                self.active.write_all(&transaction_id_bytes).unwrap();
+                // encode -----------------------------------------------------
+            }
+            LogRecord::TransactionValue {
+                transaction_id,
+                key,
+                value,
+            } => {
+                // encode -----------------------------------------------------
+                // write transaction value
+                self.active.write_all(&[3]).unwrap();
+
+                // write transaction id
+                let transaction_id_bytes = transaction_id.to_le_bytes();
+                self.active.write_all(&transaction_id_bytes).unwrap();
+
+                // write key size
+                let key_size = (key.len() as u16).to_le_bytes();
+                self.active.write_all(&key_size).unwrap();
+
+                // write value size
+                let value_size = (value.len() as u16).to_le_bytes();
+                self.active.write_all(&value_size).unwrap();
+
+                // write key
+                self.active.write_all(key).unwrap();
+
+                // write value
+                self.active.write_all(value).unwrap();
+                // encode -----------------------------------------------------
+            }
+            LogRecord::TransactionTomb {
+                transaction_id,
+                key,
+            } => {
+                // encode -----------------------------------------------------
+                // write transaction tombstone
+                self.active.write_all(&[4]).unwrap();
+
+                // write transaction id
+                let transaction_id_bytes = transaction_id.to_le_bytes();
+                self.active.write_all(&transaction_id_bytes).unwrap();
+
+                // write key size
+                let key_size = (key.len() as u16).to_le_bytes();
+                self.active.write_all(&key_size).unwrap();
+
+                // write key
+                self.active.write_all(key).unwrap();
+                // encode -----------------------------------------------------
+            }
+            LogRecord::TransactionEnd {
+                end_timestamp,
+                transaction_id,
+            } => {
+                // encode -----------------------------------------------------
+                // write transaction end
+                self.active.write_all(&[5]).unwrap();
+
+                // write start timestamp
+                let start_timestamp_bytes = end_timestamp.to_le_bytes();
+                self.active.write_all(&start_timestamp_bytes).unwrap();
+
+                // write transaction id
+                let transaction_id_bytes = transaction_id.to_le_bytes();
+                self.active.write_all(&transaction_id_bytes).unwrap();
+                // encode -----------------------------------------------------
             }
         }
+
+        // And finally, flush
+        self.active.flush().unwrap();
     }
+
+    // pub fn log(&mut self, key: &[u8], value: WalValue, timestamp: u64) {
+    //     match value {
+    //         WalValue::Value(value) => {
+    //             self.active.write_all(&[0]).unwrap();
+
+    //             // encode -----------------------------------------------------
+    //             // write timestamp
+    //             let timestamp_bytes = timestamp.to_le_bytes();
+    //             self.active.write_all(&timestamp_bytes).unwrap();
+
+    //             // write key size
+    //             let key_size = (key.len() as u16).to_le_bytes();
+    //             self.active.write_all(&key_size).unwrap();
+
+    //             // write value size
+    //             let value_size = (value.len() as u16).to_le_bytes();
+    //             self.active.write_all(&value_size).unwrap();
+
+    //             // write key
+    //             self.active.write_all(key).unwrap();
+
+    //             // write value
+    //             self.active.write_all(value).unwrap();
+    //             // encode -----------------------------------------------------
+
+    //             self.active.flush().unwrap();
+    //         }
+    //         WalValue::Tomb => {
+    //             // encode -----------------------------------------------------
+    //             // write tombstone
+    //             self.active.write_all(&[1]).unwrap();
+
+    //             // write timestamp
+    //             let timestamp_bytes = timestamp.to_le_bytes();
+    //             self.active.write_all(&timestamp_bytes).unwrap();
+
+    //             // write key size
+    //             let key_size = (key.len() as u16).to_le_bytes();
+    //             self.active.write_all(&key_size).unwrap();
+    //             // encode -----------------------------------------------------
+
+    //             // write key
+    //             self.active.write_all(key).unwrap();
+
+    //             self.active.flush().unwrap();
+    //         }
+    //     }
+    // }
 
     pub fn freeze_current(&mut self) {
         self.frozen.push_back(self.active_path.clone());
@@ -153,11 +290,14 @@ impl Wal {
         let frozen_tables = Queue::default();
         let frozen_sizes = Queue::default();
 
+        // transaction_id -> transaction records mapping
+        let mut replayer = WalReplayer::empty();
+
         // First replay frozen files in order (older to newer)
         for path in &self.frozen {
             let memtable = Arc::new(Memtable::new());
             let mut file = std::fs::File::open(path).unwrap();
-            let size = Self::replay_file(&mut file, &memtable);
+            let size = replayer.replay_file(&mut file, &memtable);
 
             frozen_tables.push(memtable);
             frozen_sizes.push(size);
@@ -166,7 +306,7 @@ impl Wal {
         // Create and replay active memtable
         let active = Arc::new(Memtable::new());
         let file = std::fs::File::open(&self.active_path).unwrap();
-        let active_size = Self::replay_file(&mut std::io::BufReader::new(file), &active);
+        let active_size = replayer.replay_file(&mut std::io::BufReader::new(file), &active);
 
         LsmMemory {
             active,
@@ -174,84 +314,6 @@ impl Wal {
             frozen: frozen_tables,
             frozen_sizes,
         }
-    }
-
-    /// Returns the approximate size of this WAL file
-    fn replay_file<R: std::io::Read>(file: &mut R, memtable: &Memtable) -> usize {
-        let mut type_buf = [0u8; 1];
-        let mut size_buf = [0u8; 2];
-        let mut timestamp_buf = [0u8; 8];
-        let mut total_size = 0;
-
-        loop {
-            // Try to read key size
-            match file.read_exact(&mut type_buf) {
-                Ok(_) => {
-                    let rec_type = type_buf[0];
-                    match rec_type {
-                        0 => {
-                            // encode -----------------------------------------------------
-                            // Read timestamp
-                            file.read_exact(&mut timestamp_buf).unwrap();
-                            let timestamp = u64::from_le_bytes(timestamp_buf);
-
-                            // Read key size
-                            file.read_exact(&mut size_buf).unwrap();
-                            let key_size = u16::from_le_bytes(size_buf);
-
-                            // Read value size
-                            file.read_exact(&mut size_buf).unwrap();
-                            let value_size = u16::from_le_bytes(size_buf);
-
-                            // Read key
-                            let mut key = vec![0u8; key_size as usize];
-                            file.read_exact(&mut key).unwrap();
-
-                            // Read value
-                            let mut value = vec![0u8; value_size as usize];
-                            file.read_exact(&mut value).unwrap();
-                            // encode -----------------------------------------------------
-
-                            // Track total size
-                            total_size += key_size as usize + value_size as usize;
-
-                            // Insert into memtable
-                            memtable.put(&key, &value, timestamp);
-                        }
-                        1 => {
-                            // encode -----------------------------------------------------
-                            // Read timestamp
-                            file.read_exact(&mut timestamp_buf).unwrap();
-                            let timestamp = u64::from_le_bytes(timestamp_buf);
-
-                            // Read key size
-                            file.read_exact(&mut size_buf).unwrap();
-                            let key_size = u16::from_le_bytes(size_buf);
-
-                            // Read key
-                            let mut key = vec![0u8; key_size as usize];
-                            file.read_exact(&mut key).unwrap();
-                            // encode -----------------------------------------------------
-
-                            // Track total size
-                            total_size += key_size as usize;
-
-                            // Insert into memtable
-                            memtable.delete(&key, timestamp);
-                        }
-                        rec_type => {
-                            panic!("Unexpected record type: {}", rec_type);
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    break;
-                }
-                Err(e) => panic!("Error reading WAL file: {}", e),
-            }
-        }
-
-        total_size
     }
 }
 
