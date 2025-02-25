@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 
-pub struct  LsmMemory {
+pub struct LsmMemory {
     pub(crate) active: Arc<Memtable>,
     /// An approximation
     pub(crate) active_size: AtomicUsize,
