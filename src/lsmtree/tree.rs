@@ -221,46 +221,13 @@ impl LsmTree {
         let wal_flusher = wal.clone();
         let config_flusher = config.clone();
 
-        let flush_handle = std::thread::spawn(move || {
-            //
-            loop {
-                let status = flush_signal_flusher.wait();
-                if status == SignalReturnStatus::Terminated {
-                    break;
-                }
-                // routine: flush
-
-                // acqire lock in order to avoid deadlock. ---------------------------------
-                let mut wal = wal_flusher.write().unwrap();
-                let mem = mem_flusher.read().unwrap();
-
-                while !mem.frozen.is_empty() {
-                    let relpath = disk_flusher.level_0.write().unwrap().get_filename();
-                    let guard = Guard::new();
-
-                    // clone the arc, use fully qualified name
-                    let table = Arc::clone(mem.frozen.peek(&guard).unwrap());
-
-                    let sst = SstWriter::new(
-                        config_flusher.sst.clone(),
-                        config_flusher.dir.clone(),
-                        relpath.clone(),
-                        table,
-                    );
-
-                    sst.build();
-
-                    disk_flusher.add_l0_sst(&relpath);
-
-                    mem.frozen.pop();
-
-                    // wal: remove last wal file and its handle
-                    wal.pop_oldest();
-                }
-
-                disk_flusher.update_manifest();
-            }
-        });
+        let flush_handle = Self::get_flush_thread_handle(
+            flush_signal_flusher,
+            wal_flusher,
+            mem_flusher,
+            disk_flusher,
+            config_flusher,
+        );
 
         let tree = Self {
             mem,
@@ -302,7 +269,34 @@ impl LsmTree {
         let wal_flusher = wal.clone();
         let config_flusher = config.clone();
 
-        let flush_handle = std::thread::spawn(move || {
+        let flush_handle = Self::get_flush_thread_handle(
+            flush_signal_flusher,
+            wal_flusher,
+            mem_flusher,
+            disk_flusher,
+            config_flusher,
+        );
+
+        Self {
+            config,
+            mem,
+            disk,
+            wal,
+            flush_signal,
+            flush_handle: Some(flush_handle),
+            clock,
+        }
+    }
+
+    fn get_flush_thread_handle(
+        flush_signal_flusher: Arc<Signal>,
+        wal_flusher: Arc<RwLock<Wal>>,
+        mem_flusher: Arc<RwLock<LsmMemory>>,
+        disk_flusher: Arc<LsmDisk>,
+        config_flusher: LsmConfig,
+    ) -> JoinHandle<()> {
+        std::thread::spawn(move || {
+            //
             loop {
                 let status = flush_signal_flusher.wait();
                 if status == SignalReturnStatus::Terminated {
@@ -310,8 +304,10 @@ impl LsmTree {
                 }
                 // routine: flush
 
-                let mem = mem_flusher.read().unwrap();
+                // acqire lock in order to avoid deadlock. ---------------------------------
                 let mut wal = wal_flusher.write().unwrap();
+                let mem = mem_flusher.read().unwrap();
+
                 while !mem.frozen.is_empty() {
                     let relpath = disk_flusher.level_0.write().unwrap().get_filename();
                     let guard = Guard::new();
@@ -338,17 +334,7 @@ impl LsmTree {
 
                 disk_flusher.update_manifest();
             }
-        });
-
-        Self {
-            config,
-            mem,
-            disk,
-            wal,
-            flush_signal,
-            flush_handle: Some(flush_handle),
-            clock,
-        }
+        })
     }
 }
 
