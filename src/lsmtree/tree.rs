@@ -327,6 +327,7 @@ impl LsmTree {
                     disk_flusher.add_l0_sst(&relpath);
 
                     mem.frozen.pop();
+                    mem.frozen_sizes.pop();
 
                     // wal: remove last wal file and its handle
                     wal.pop_oldest();
