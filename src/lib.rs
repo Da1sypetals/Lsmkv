@@ -6,4 +6,4 @@ pub mod memory;
 pub mod transaction;
 pub mod wal;
 
-use lsmtree::tree::LsmTree;
+pub use lsmtree::tree::LsmTree;

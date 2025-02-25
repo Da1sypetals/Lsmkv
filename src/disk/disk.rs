@@ -330,26 +330,6 @@ impl LsmDisk {
         {
             // Determine compaction Level
             let (mut from, mut to) = level.from_to_levels(self);
-            /*
-
-            let (mut from, mut to) = match level {
-                CompactionLevel::L01 => {
-                    let from = self.level_0.write().unwrap();
-                    let to = self.level_1.write().unwrap();
-                    (from, to)
-                }
-                CompactionLevel::L12 => {
-                    let from = self.level_1.write().unwrap();
-                    let to = self.level_2.write().unwrap();
-                    (from, to)
-                }
-                CompactionLevel::L23 => {
-                    let from = self.level_2.write().unwrap();
-                    let to = self.level_3.write().unwrap();
-                    (from, to)
-                }
-            };
-             */
 
             // Iterate files from latest to oldest:
             // 1. If the key does not exist in the map, insert key-record_size pair into the keys map;
@@ -440,9 +420,6 @@ impl LsmDisk {
                     filename: relpath,
                 });
             }
-
-            // dbg!(from.sst_readers.len());
-            // dbg!(to.sst_readers.len());
 
             from.sst_readers.clear();
         } // `from` and `to` will be released here
